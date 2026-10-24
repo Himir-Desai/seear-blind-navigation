@@ -111,12 +111,24 @@ public final class GuidanceEngine {
     public var maxAge: Double = 1.5
     public private(set) var isPaused = false
     public private(set) var frames: [String: SceneFrame] = [:]
-    private var lockedTarget: (feed: String, bearing: Double, distance: Double)?
+    /// One accepted item for the debug overlay, including while an urgent hazard mutes its sound.
+    public private(set) var selectedItem: (feed: String, observation: Observation)?
+    private struct ItemLock {
+        var feed: String
+        var bearing: Double
+        var distance: Double
+        var box: [Double]
+        var yaw: Double
+        var captured: Double
+    }
+    private var lockedTarget: ItemLock?
+    private var acquiredItem = false
+    public var needsItemReselection: Bool { acquiredItem && lockedTarget == nil && !target.isEmpty }
     public init() {}
-    public func reset() { frames.removeAll(); lockedTarget = nil }
-    public func pause() { isPaused = true; reset() }
-    public func resume() { isPaused = false; reset() }
-    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); lockedTarget = nil }
+    public func reset() { frames.removeAll(); lockedTarget = nil; selectedItem = nil }
+    public func pause() { isPaused = true; frames.removeAll(); selectedItem = nil }
+    public func resume() { isPaused = false; frames.removeAll(); selectedItem = nil }
+    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); lockedTarget = nil; acquiredItem = false; selectedItem = nil }
     public func ingest(_ frame: SceneFrame) {
         guard ["front", "feet"].contains(frame.feed), frame.captured.isFinite, frame.yaw.isFinite,
               frame.coverage.isFinite, (0...1).contains(frame.coverage),
@@ -124,13 +136,14 @@ public final class GuidanceEngine {
         frames[frame.feed] = frame
     }
     public func evaluate(now: Double, yaw: Double, tracking: Bool) -> Guidance {
+        selectedItem = nil
         func unavailable(_ text: String) -> Guidance { Guidance(target: nil, obstacle: nil, status: text, fault: true) }
         if isPaused { return Guidance(target:nil,obstacle:nil,status:"Guidance paused",fault:false) }
-        guard tracking, yaw.isFinite else { lockedTarget = nil; return unavailable("Head tracking unavailable. Guidance paused.") }
+        guard tracking, yaw.isFinite else { return unavailable("Head tracking unavailable. Guidance paused.") }
         let fresh = ["front", "feet"].compactMap { frames[$0] }.filter {
             now >= $0.captured && now - $0.captured <= maxAge && $0.coverage >= 0.6
         }
-        guard fresh.count == 2 else { lockedTarget = nil; return unavailable("Camera or vision delayed. Guidance paused.") }
+        guard fresh.count == 2 else { return unavailable("Camera or vision delayed. Guidance paused.") }
         var hazards: [(SceneFrame, Observation)] = []
         for frame in fresh {
             for o in frame.obstacles where o.valid {
@@ -152,19 +165,40 @@ public final class GuidanceEngine {
         }
         let selected: (SceneFrame, Observation)?
         if let lock = lockedTarget {
-            selected = candidates.filter {
-                $0.0.feed == lock.feed && abs(Geometry.wrap($0.1.bearing + $0.0.yaw - lock.bearing)) < 20 &&
-                abs($0.1.distance - lock.distance) < max(0.8, lock.distance * 0.6)
-            }.min { abs($0.1.bearing + $0.0.yaw - lock.bearing) < abs($1.1.bearing + $1.0.yaw - lock.bearing) }
-            // Do not silently switch to a different instance after losing the chosen object.
-        } else {
+            func overlap(_ a: [Double], _ b: [Double]) -> Double? {
+                guard a.count == 4, b.count == 4, (a+b).allSatisfy(\.isFinite),
+                      a[2] > a[0], a[3] > a[1], b[2] > b[0], b[3] > b[1] else { return nil }
+                let intersection = max(0,min(a[2],b[2])-max(a[0],b[0])) * max(0,min(a[3],b[3])-max(a[1],b[1]))
+                return intersection / ((a[2]-a[0])*(a[3]-a[1])+(b[2]-b[0])*(b[3]-b[1])-intersection)
+            }
+            let matches = candidates.compactMap { frame,observation -> (SceneFrame,Observation,Double)? in
+                guard frame.feed == lock.feed, frame.captured >= lock.captured else { return nil }
+                let angle = abs(Geometry.wrap(observation.bearing+frame.yaw-lock.bearing))
+                let range = abs(observation.distance-lock.distance), rangeGate = max(0.8,lock.distance*0.6)
+                guard angle < 20, range < rangeGate else { return nil }
+                let stableView = abs(Geometry.wrap(frame.yaw-lock.yaw)) < 5
+                let iou = stableView ? overlap(lock.box,observation.box) : nil
+                if let iou, iou < 0.1 { return nil }
+                return (frame,observation,angle/20+range/rangeGate+(iou.map { 1-$0 } ?? 0))
+            }
+            let match = matches.min { a,b in a.2 == b.2 ? a.1.confidence > b.1.confidence : a.2 < b.2 }
+            selected = match.map { ($0.0,$0.1) }
+        } else if !acquiredItem {
             selected = candidates.max { $0.1.confidence < $1.1.confidence }
+        } else {
+            // A reference/backend reset invalidated the identity. Require Find again.
+            selected = nil
         }
-        if let (f, o) = selected { lockedTarget = (f.feed, Geometry.wrap(o.bearing + f.yaw), o.distance) }
+        if let (frame,observation) = selected {
+            lockedTarget = ItemLock(feed:frame.feed,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
+                                    box:observation.box,yaw:frame.yaw,captured:frame.captured)
+            acquiredItem = true
+        }
+        if let (frame,observation) = selected { selectedItem = (frame.feed,observation) }
         let urgent = hazard.map { $0.1.distance <= 1.2 } ?? false
         return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: hazard == nil ? 1 : 0.2) },
                         obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true, feed: $0.0.feed) },
-                        status: hazard != nil ? "Obstacle in forward view" : target.isEmpty ? "Monitoring forward view" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
+                        status: hazard != nil ? "Obstacle in forward view" : target.isEmpty ? "Monitoring forward view" : needsItemReselection ? "Find again to reselect \(target)" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
     }
 }
 

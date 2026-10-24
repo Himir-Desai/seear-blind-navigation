@@ -99,3 +99,24 @@ Completed checks:
 - Native screenshot/accessibility inspection confirmed the rebuilt feet default of 90.00°, full backend layout and hardware-free UI preview. Cameras/microphone/motion were not started. Whitespace and shell syntax checks passed.
 
 No real cap footage was used for this correction's acceptance. The reported physical symptom still requires a stationary, supervised recheck with the actual shoes, measured mount geometry and nearby external objects. General RGB range accuracy is unchanged. See [filter details and hardware regression](FOOTWEAR_FILTER.md).
+
+## 1.1: distinct cues and a single selected item
+
+User chose highest-confidence acquisition followed by keeping that item. The item waveform retains its broadband/440 Hz single pulse. Obstacle alerts now use broadband 1200/1800 Hz double beeps; both remain mono HRTF sources. Only the selected item's box and score are drawn across both previews. Later higher-scoring candidates cannot replace the lock; missing association stops the item sound. Pause/resume and brief stale/tracking faults retain the lock, while a full backend/motion-reference reset requires a new voice Find command.
+
+Validation completed:
+
+- Signed release build, **24 Swift tests**, **26 Python tests**, signature validation, shell syntax and whitespace checks passed. New guidance regressions cover highest valid initial score across both feeds, a higher-scoring newcomer, nearby nonoverlapping boxes, target loss, repeated Find, stale/tracking faults, pause/resume and full reference reset. The existing urgent-hazard regression also verifies that tracking continues while item audio is suppressed.
+- **9 actual HRTF checks** passed. Alongside left/right, −23-sample interaural delay, head rotation, real item+hazard headroom and fault mute, new rendered-signal checks verify the item's 440 Hz component, the hazard's 1200/1800 Hz components and distinct pulse counts: **27 hazard bursts vs 11 item pulses** over the same 2.73 s window at 1 m. Dominant-tone checks require at least 10× the opposite cue's reference-tone energy.
+- `build/item-cue.wav` and `build/obstacle-cue.wav` are front-centred examples exported from the actual offline HRTF graph. Their WAV headers were checked: stereo, 48 kHz, 16-bit PCM, 2.731 s each. These are ignored generated artifacts. Signal differences do not establish perceptual distinguishability for a wearer.
+- The native `--ui-item-preview` screenshot/accessibility state was inspected. Two synthetic candidates in front and another in feet produced just one green selected box (score 0.90) in front, with no feet box. Preview used the existing public cat sample, labelled synthetic, with camera/microphone/motion capture off.
+
+Reproduce the UI smoke with the public sample from the ML-smoke instructions present:
+
+```bash
+open -n build/Seear.app --args --ui-item-smoke
+```
+
+It writes `build/item-ui-smoke.png` and exits. `--ui-item-preview` keeps the same synthetic case open. `bash verify.sh` writes both WAV comparisons as part of the audio check.
+
+The detector/worker/model code and inference deadline are unchanged in 1.1, so cached-model latency was not rerun; the B4 result above remains the last measured baseline. Real cap/AirPods testing must check cue recognition while walking, stable association of similar nearby items and target loss. B5 remains open: a high-scoring false positive can still be selected. Association uses geometry/box continuity, not verified persistent visual identity or ownership.

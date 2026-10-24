@@ -61,22 +61,22 @@ func visionCheck() throws {
 }
 
 func audioCheck() throws {
-    func render(bearing: Double, yaw: Double, two: Bool = false, muted: Bool = false) throws -> ([Float],[Float]) {
+    func render(bearing: Double, yaw: Double, two: Bool = false, muted: Bool = false, hazard: Bool = true, long: Bool = false) throws -> ([Float],[Float]) {
         let audio = SpatialAudio()
         try audio.start(offline:true)
         defer { audio.stop() }
         let observation = Observation(label:"test",confidence:1,bearing:bearing,distance:1)
         // Hazard has no FOV amplitude gate, making the rotated/static comparison exact.
-        let cue = Cue(observation,yaw:0,hazard:true)
-        let state = Guidance(target:two ? cue : nil,obstacle:cue,status:"SYNTHETIC AUDIO CHECK",fault:false)
+        let cue = Cue(observation,yaw:0,hazard:true), item = Cue(observation,yaw:0)
+        let state = Guidance(target:two || !hazard ? item : nil,obstacle:hazard || two ? cue : nil,status:"SYNTHETIC AUDIO CHECK",fault:false)
         audio.update(state,yaw:yaw)
         let buffer = AVAudioPCMBuffer(pcmFormat:audio.stereo,frameCapacity:4096)!
         var left: [Float] = [], right: [Float] = []
-        for index in 0..<14 {
+        for index in 0..<(long ? 40 : 14) {
             if muted && index == 4 { audio.mute() }
             let status = try audio.engine.renderOffline(4096,to:buffer)
             guard status == .success else { throw NSError(domain:"Offline render failed: \(status.rawValue)",code:1) }
-            if index >= 10 {
+            if index >= (long ? 8 : 10) {
                 left += Array(UnsafeBufferPointer(start:buffer.floatChannelData![0],count:Int(buffer.frameLength)))
                 right += Array(UnsafeBufferPointer(start:buffer.floatChannelData![1],count:Int(buffer.frameLength)))
             }
@@ -101,6 +101,46 @@ func audioCheck() throws {
     try require(difference < 1e-8,"Head yaw rotates the perceived direction once with the correct sign")
     let mix = try render(bearing:0,yaw:0,two:true)
     try require((mix.0+mix.1).allSatisfy { $0.isFinite && abs($0) < 1 },"Two simultaneous voices remain finite and unclipped")
+    let item = try render(bearing:0,yaw:0,hazard:false,long:true)
+    let hazard = try render(bearing:0,yaw:0,long:true)
+    func toneEnergy(_ samples: [Float], frequency: Double) -> Double {
+        var real = 0.0, imaginary = 0.0
+        for (i,sample) in samples.enumerated() {
+            let phase = 2 * Double.pi * frequency * Double(i) / 48000
+            real += Double(sample)*cos(phase); imaginary += Double(sample)*sin(phase)
+        }
+        return (real*real+imaginary*imaginary)/pow(Double(samples.count),2)
+    }
+    func mono(_ stereo: ([Float],[Float])) -> [Float] { zip(stereo.0,stereo.1).map { ($0+$1)*0.5 } }
+    let itemMono = mono(item), hazardMono = mono(hazard)
+    try require(toneEnergy(itemMono,frequency:440) > 10*toneEnergy(itemMono,frequency:1200),"Item cue retains its 440 Hz single-pulse identity")
+    try require(toneEnergy(hazardMono,frequency:1200) > 10*toneEnergy(hazardMono,frequency:440) &&
+                toneEnergy(hazardMono,frequency:1800) > 10*toneEnergy(hazardMono,frequency:440),"Hazard cue has distinct 1200/1800 Hz notes through HRTF")
+    func countBursts(_ samples: [Float]) -> Int {
+        let size = 240 // 5 ms RMS bins, measured after the actual HRTF graph.
+        var levels: [Double] = []
+        for start in stride(from:0,to:samples.count-size,by:size) {
+            levels.append(samples[start..<(start+size)].reduce(0) { $0+Double($1*$1) }/Double(size))
+        }
+        let threshold = (levels.max() ?? 0)*0.15
+        var active = false, count = 0
+        for level in levels { let next = level > threshold; if next && !active { count += 1 }; active = next }
+        return count
+    }
+    let itemBursts = countBursts(itemMono), hazardBursts = countBursts(hazardMono)
+    try require(hazardBursts >= itemBursts*2,"Hazard double beeps remain temporally distinct (\(hazardBursts) vs \(itemBursts) item pulses)")
+    func writeExample(_ samples: ([Float],[Float]), name: String) throws {
+        let url = URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("build/"+name+".wav")
+        let file = try AVAudioFile(forWriting:url,settings:[AVFormatIDKey:kAudioFormatLinearPCM,AVSampleRateKey:48000,
+            AVNumberOfChannelsKey:2,AVLinearPCMBitDepthKey:16,AVLinearPCMIsFloatKey:false,AVLinearPCMIsBigEndianKey:false])
+        let buffer = AVAudioPCMBuffer(pcmFormat:file.processingFormat,frameCapacity:AVAudioFrameCount(samples.0.count))!
+        buffer.frameLength = buffer.frameCapacity
+        for (channel,values) in [samples.0,samples.1].enumerated() {
+            values.withUnsafeBufferPointer { source in buffer.floatChannelData![channel].update(from:source.baseAddress!,count:values.count) }
+        }
+        try file.write(from:buffer)
+    }
+    try writeExample(item,name:"item-cue"); try writeExample(hazard,name:"obstacle-cue")
     let muted = try render(bearing:0,yaw:0,muted:true)
     try require(energy(muted.0)+energy(muted.1) < 1e-10,"Fault mute removes both directional voices")
 }
