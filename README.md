@@ -1,6 +1,6 @@
 # Seear Demo 1
 
-A native macOS indoor demo for two cap-mounted RGB USB cameras and motion-capable AirPods. Neutral mode plays a spatial alert for the nearest estimated obstacle in the walking corridor. Item-finding mode accepts “Hey Seear, where is my backpack” or “Hey Seear, where is my white cane” and keeps obstacle monitoring active while guiding toward the visible item.
+A native macOS indoor demo for two cap-mounted RGB USB cameras and motion-capable AirPods. Neutral mode plays a spatial alert for the nearest estimated obstacle in a corridor ahead of the cap camera. Forward follows the head as the wearer turns; no direction reset is needed. Item-finding mode accepts “Hey Seear, where is my backpack” or “Hey Seear, where is my white cane” and keeps obstacle monitoring active while guiding toward the visible item.
 
 This is a supervised research demo. RGB distances are estimates; silence never means a clear path. Continue using a cane and a sighted guide. Real cap-camera performance must be measured before relying on the cues.
 
@@ -14,15 +14,19 @@ bash build.sh
 bash run.sh
 ```
 
-Grant Camera, Motion & Fitness, and (when enabling voice) Microphone and Speech Recognition permissions to Seear. Run the signed app via `run.sh`, not the bare SwiftPM executable. Ad-hoc signatures can cause macOS to ask again after a rebuild; set `CODESIGN_ID` to your stable signing identity if you have one.
+During backend setup, grant Camera, Motion & Fitness, Microphone and Speech Recognition permissions to Seear. Run the signed app via `run.sh`, not the bare SwiftPM executable. Ad-hoc signatures can cause macOS to ask again after a rebuild; set `CODESIGN_ID` to your stable signing identity if you have one.
 
-1. Connect both cameras. Select the front and feet devices; do not select the same device twice.
-2. Enter each camera's measured horizontal FOV, downward mount angle and cap height. The displayed defaults are placeholders. Set depth scale from known indoor test distances; this does not make monocular estimates reliable measurements.
-3. Wear AirPods, select them as macOS output, and use a comfortable volume. Prefer the Mac microphone for speech; an AirPods microphone route can reduce audio quality.
-4. Face forward and press Calibrate. Turn your head right about 30° and press Calibrate again. Face the intended walking direction and press Set forward.
-5. Start guidance. Wait for local vision to load and for fresh results from both cameras. Previews and status are for a sighted supervisor; essential failures and search state changes also have spoken feedback.
-6. Use the Find field, or Enable voice and say the wake phrase plus a command. “Hey Seear, stop” cancels the item search while retaining obstacle monitoring. Disable voice stops the microphone.
-7. Keep near the calibrated head pitch and walk only a supervised straight segment. Before walking in a new direction, face it and press Set forward or say “Hey Seear, set forward”. Stop guidance ends both camera feeds and the vision worker.
+The Mac interface is for the developer or sighted supervisor to configure and debug the backend. Once the backend is running, the wearer controls it by voice and does not need to use the Mac.
+
+1. **Backend setup:** connect both USB cameras and select front/feet devices. Enter their measured FOV, mount angles, cap height and depth scale. Defaults are placeholders; RGB estimates remain uncertain.
+2. Select stereo AirPods output and a microphone that can hear the wearer at the intended demo distance. A Mac microphone works only within its usable range. Check that voice input preserves stereo headphone output.
+3. With the cap and AirPods worn at the normal head pitch, start the backend. AirPods motion gets an arbitrary reference automatically, and local voice listening starts automatically. Confirm the left/right cue alignment during setup. No face-forward/right-turn button calibration is required.
+4. Wait for the spoken “Guidance active” message. Both cameras and head tracking must supply fresh data before directional cues play.
+5. The wearer can say “Hey Seear, where is my backpack” or “Hey Seear, where is my white cane”. “Hey Seear, stop” cancels the item search while obstacle monitoring continues.
+6. “Hey Seear, pause guidance” mutes directional guidance and keeps voice listening active. “Hey Seear, resume guidance” resumes the selected search and obstacle monitoring after fresh camera results arrive. “Stop guidance” and “start guidance” are equivalent voice commands.
+7. Turn naturally: camera-forward follows the cap automatically, including right-angle and about-turns. Large changes in head pitch still pause geometry-based guidance; returning to the starting pitch restores it without a click. The backend's manual controls are debug overrides.
+
+The monitored corridor follows **head direction**, not an inferred body travel direction. Looking sideways while continuing to walk can leave the travel path outside the camera view. This version does not claim to monitor unseen hazards or infer walking intent. Supervised turn testing is still required.
 
 The item cue is a pulsed broadband/440 Hz sound, with faster pulses and stronger level when the estimated item is nearer. The obstacle cue is higher pitched and faster. Sounds indicate object locations, not a safe direction to walk. A close hazard suppresses the item sound; other in-path hazards duck it. Target loss stops its directional cue; Find again to select a different instance. Thin white canes may be missed and require specific real-scene evaluation.
 
