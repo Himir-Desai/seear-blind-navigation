@@ -9,14 +9,15 @@ public enum Geometry {
 }
 
 public enum VoiceCommand: Equatable {
-    case find(String), cancel, forward
+    case find(String), cancel, pauseGuidance, resumeGuidance
     public static func parse(_ phrase: String) -> VoiceCommand? {
         let cleaned = phrase.lowercased().replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
             .split(separator: " ").joined(separator: " ")
         guard let wake = cleaned.range(of: #"\bhey (seear|seer|see ear|see her)\b"#, options: .regularExpression) else { return nil }
         var text = String(cleaned[wake.upperBound...]).trimmingCharacters(in: .whitespaces)
         if ["stop", "cancel", "stop finding", "cancel search"].contains(text) { return .cancel }
-        if text == "set forward" { return .forward }
+        if ["pause", "pause guidance", "stop guidance"].contains(text) { return .pauseGuidance }
+        if ["resume", "resume guidance", "start guidance"].contains(text) { return .resumeGuidance }
         let prefixes = ["where is ", "where s ", "find "]
         guard let prefix = prefixes.first(where: { text.hasPrefix($0) }) else { return nil }
         text.removeFirst(prefix.count)
@@ -90,15 +91,18 @@ public struct Guidance {
 }
 
 /// Latest observations only. AirPods supply rotation, never listener translation.
-/// A manually set heading defines a straight walking segment; no route planning is implied.
+/// The current cap-camera/head direction defines the forward alert corridor.
+/// This does not infer body heading, walking intent or a safe route.
 public final class GuidanceEngine {
     public var target: String = ""
-    public var walkingYaw: Double = 0
     public var maxAge: Double = 1.5
+    public private(set) var isPaused = false
     public private(set) var frames: [String: SceneFrame] = [:]
     private var lockedTarget: (feed: String, bearing: Double, distance: Double)?
     public init() {}
     public func reset() { frames.removeAll(); lockedTarget = nil }
+    public func pause() { isPaused = true; reset() }
+    public func resume() { isPaused = false; reset() }
     public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); lockedTarget = nil }
     public func ingest(_ frame: SceneFrame) {
         guard ["front", "feet"].contains(frame.feed), frame.captured.isFinite, frame.yaw.isFinite,
@@ -108,10 +112,8 @@ public final class GuidanceEngine {
     }
     public func evaluate(now: Double, yaw: Double, tracking: Bool) -> Guidance {
         func unavailable(_ text: String) -> Guidance { Guidance(target: nil, obstacle: nil, status: text, fault: true) }
+        if isPaused { return Guidance(target:nil,obstacle:nil,status:"Guidance paused",fault:false) }
         guard tracking, yaw.isFinite else { lockedTarget = nil; return unavailable("Head tracking unavailable. Guidance paused.") }
-        guard abs(Geometry.relative(yaw, yaw: walkingYaw)) <= 50 else {
-            return unavailable("Walking direction outside view. Face forward or set forward.")
-        }
         let fresh = ["front", "feet"].compactMap { frames[$0] }.filter {
             now >= $0.captured && now - $0.captured <= maxAge && $0.coverage >= 0.6
         }
@@ -119,7 +121,9 @@ public final class GuidanceEngine {
         var hazards: [(SceneFrame, Observation)] = []
         for frame in fresh {
             for o in frame.obstacles where o.valid {
-                let angle = Geometry.relative(o.bearing + frame.yaw, yaw: walkingYaw) * .pi / 180
+                // A turn changes the corridor immediately; a source already observed
+                // stays at its capture bearing until a new image refreshes it.
+                let angle = Geometry.relative(o.bearing + frame.yaw, yaw: yaw) * .pi / 180
                 let lateral = sin(angle) * o.distance, forward = cos(angle) * o.distance
                 if abs(lateral) <= 0.55 && forward > 0 && forward <= 3 {
                     hazards.append((frame, o))
@@ -147,7 +151,7 @@ public final class GuidanceEngine {
         let urgent = hazard.map { $0.1.distance <= 1.2 } ?? false
         return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: hazard == nil ? 1 : 0.2) },
                         obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true) },
-                        status: hazard != nil ? "Obstacle in walking corridor" : target.isEmpty ? "Monitoring obstacles" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
+                        status: hazard != nil ? "Obstacle in forward view" : target.isEmpty ? "Monitoring forward view" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
     }
 }
 

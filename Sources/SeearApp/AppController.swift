@@ -10,7 +10,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var cameras: [Camera] = [], devices: [AVCaptureDevice] = []
     private var images: [String: CapturedImage] = [:]
     private var cameraGeometry: [String: CameraGeometry] = [:]
-    private var running = false, forwardSet = false, nextFeed = "front", visionOK = false
+    private var running = false, nextFeed = "front", visionOK = false
+    private var referenceGeneration = 0
     private var timer: Timer?, lastAnnouncement = "", lastSpoken = 0.0
     private var started = 0.0
     private var previouslyFaulted = true
@@ -18,7 +19,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let status = NSTextField(labelWithString: "Ready to configure"), tracking = NSTextField(labelWithString: ""),
                 visionStatus = NSTextField(labelWithString: "Local vision off"), voiceStatus = NSTextField(labelWithString: "Voice off"),
                 detail = NSTextField(labelWithString: ""), frontSelect = NSPopUpButton(), feetSelect = NSPopUpButton(),
-                startButton = NSButton(title: "Start guidance", target: nil, action: nil),
+                startButton = NSButton(title: "Start backend", target: nil, action: nil),
                 target = NSTextField(string: "backpack"), frontPreview = CameraPreview(), feetPreview = CameraPreview()
     private var geometryFields: [[NSTextField]] = []
     private var settings: [NSControl] = []
@@ -37,6 +38,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         tracker.start()
         voice.onStatus = { [weak self] in self?.voiceStatus.stringValue = $0 }
+        voice.onUnavailable = { [weak self] reason in self?.announce("Voice commands unavailable. \(reason)",force:true) }
         voice.onCommand = { [weak self] in self?.command($0) }
         NotificationCenter.default.addObserver(self, selector: #selector(cameraDisconnected), name: .AVCaptureDeviceWasDisconnected, object: nil)
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.tick() }
@@ -58,7 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             stack.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor,constant:-24),
             stack.topAnchor.constraint(equalTo: window.contentView!.topAnchor,constant:20)])
         stack.addArrangedSubview(text("Seear",size:32,weight:.bold))
-        stack.addArrangedSubview(text("Indoor navigation demo · Local vision · Spatial audio",size:16,weight:.medium))
+        stack.addArrangedSubview(text("Backend setup and debugging · Wearer controls by voice",size:16,weight:.medium))
         stack.addArrangedSubview(text("Supervised RGB experiment. Distances are estimates. Keep using your cane and a sighted guide. Silence never means a clear path.",size:14))
         refreshDevices()
         settings = [frontSelect,feetSelect]
@@ -81,16 +83,16 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             geometryFields.append(fields); stack.addArrangedSubview(row(views))
         }
-        stack.addArrangedSubview(row([button("Calibrate",#selector(calibrate)),button("Set forward",#selector(setForward)),tracking]))
+        stack.addArrangedSubview(tracking)
         startButton.target = self; startButton.action = #selector(toggle); startButton.bezelStyle = .rounded
-        stack.addArrangedSubview(row([startButton,button("Enable voice",#selector(enableVoice)),button("Disable voice",#selector(disableVoice))]))
+        stack.addArrangedSubview(row([startButton,button("Retry voice",#selector(enableVoice)),button("Disable voice (debug)",#selector(disableVoice))]))
         target.widthAnchor.constraint(equalToConstant:240).isActive = true; target.setAccessibilityLabel("Item to find")
         stack.addArrangedSubview(row([text("Find an item"),target,button("Find",#selector(find)),button("Cancel search",#selector(cancelSearch))]))
-        stack.addArrangedSubview(text("Say “Hey Seear, where is my backpack” or “Hey Seear, where is my white cane”. “Hey Seear, stop” cancels search. Set forward again before each new walking direction.",size:13))
+        stack.addArrangedSubview(text("Voice starts with the backend. Say “Hey Seear, where is my backpack”, “pause guidance”, or “resume guidance”. “Hey Seear, stop” cancels search. Forward follows the cap as you turn.",size:13))
         status.font = .systemFont(ofSize:20,weight:.semibold); status.setAccessibilityLabel("Guidance status")
         stack.addArrangedSubview(status); stack.addArrangedSubview(detail)
         stack.addArrangedSubview(row([visionStatus,voiceStatus]))
-        stack.addArrangedSubview(text("Wear AirPods and select them as macOS sound output. Use the Mac microphone for voice to preserve stereo output. Pitch is held near calibration; large head tilts pause guidance.",size:12))
+        stack.addArrangedSubview(text("Setup: wear AirPods and select stereo output. Choose a microphone that can hear the wearer. Check left/right audio before use. No heading calibration or turn reset is required; large pitch changes still pause guidance.",size:12))
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         let menu = NSMenu(), item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu(); appMenu.addItem(withTitle:"Quit Seear",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q"); item.submenu = appMenu; NSApp.mainMenu = menu
@@ -103,15 +105,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         if devices.count > 1 { feetSelect.selectItem(at:1) }
     }
     @objc private func refreshCameras() { refreshDevices() }
-    @objc private func calibrate() {
-        if running { stop() }; forwardSet = false
-        announce(tracker.calibrate(),force:true)
-    }
-    @objc private func setForward() {
-        guard tracker.usable else { announce("Calibrate AirPods first",force:true); return }
-        guidance.walkingYaw = tracker.yaw; guidance.reset(); forwardSet = true
-        announce("Walking direction set",force:true)
-    }
     @objc private func enableVoice() { voice.start() }
     @objc private func disableVoice() { voice.stop() }
     @objc private func find() { command(.find(target.stringValue)) }
@@ -122,16 +115,21 @@ final class AppController: NSObject, NSApplicationDelegate {
             let value = VoiceCommand.canonicalTarget(value)
             guard !value.isEmpty, value.count <= 64 else { announce("Enter an item name up to 64 characters",force:true); return }
             target.stringValue = value; guidance.search(value); audio?.mute()
-            announce("Searching for \(value)",force:true)
+            announce(guidance.isPaused ? "Will search for \(value) when guidance resumes" : "Searching for \(value)",force:true)
         case .cancel:
             guidance.search(""); audio?.mute()
-            announce(running ? "Search cancelled. Obstacle monitoring remains active." : "Search cancelled. Guidance is stopped.",force:true)
-        case .forward: setForward()
+            announce(!running ? "Search cancelled. Backend is stopped." : guidance.isPaused ? "Search cancelled. Guidance remains paused." : "Search cancelled. Obstacle monitoring remains active.",force:true)
+        case .pauseGuidance:
+            guidance.pause(); audio?.mute()
+            announce("Guidance paused. Say Hey Seear, resume guidance to continue.",force:true)
+        case .resumeGuidance:
+            if !running { toggle(); return }
+            guidance.resume(); previouslyFaulted = true
+            announce("Resuming guidance. Waiting for fresh camera views.",force:true)
         }
     }
     @objc private func toggle() {
         if running { stop(); return }
-        guard tracker.usable, forwardSet else { announce("Calibrate AirPods and set forward first",force:true); return }
         guard devices.indices.contains(frontSelect.indexOfSelectedItem), devices.indices.contains(feetSelect.indexOfSelectedItem),
               frontSelect.indexOfSelectedItem != feetSelect.indexOfSelectedItem else { announce("Choose two different connected cameras",force:true); return }
         for (i,feed) in ["front","feet"].enumerated() {
@@ -154,12 +152,13 @@ final class AppController: NSObject, NSApplicationDelegate {
             guard outputRoute.channels >= 2 else {
                 announce("Select stereo AirPods output in macOS Sound settings first",force:true); return
             }
+            tracker.beginSession()
             let audio = SpatialAudio(); try audio.start(); self.audio = audio
-            guidance.reset(); images.removeAll(); visionOK = false; started = ProcessInfo.processInfo.systemUptime
-            running = true; previouslyFaulted = true; startButton.title = "Stop guidance"; settings.forEach { $0.isEnabled = false }
+            guidance.resume(); images.removeAll(); visionOK = false; started = ProcessInfo.processInfo.systemUptime
+            running = true; previouslyFaulted = true; startButton.title = "Stop backend"; settings.forEach { $0.isEnabled = false }
             let worker = VisionWorker(); self.worker = worker
             worker.onScene = { [weak self] frame in
-                guard let self, self.running else { return }
+                guard let self, self.running, frame.captured >= self.tracker.referenceStarted else { return }
                 self.guidance.ingest(frame)
                 (frame.feed == "front" ? self.frontPreview : self.feetPreview).observations = frame.objects
                 self.visionOK = true
@@ -182,22 +181,32 @@ final class AppController: NSObject, NSApplicationDelegate {
                 camera.onError = { [weak self] message in self?.stop(); self?.announce(message,force:true) }
                 cameras.append(camera); camera.start(device:devices[index])
             }
+            voice.start()
         } catch { stop(); announce(error.localizedDescription,force:true) }
     }
     private func stop() {
         running = false; cameras.forEach { $0.onFrame = nil; $0.onError = nil; $0.stop() }; cameras.removeAll()
         worker?.stop(); worker = nil; audio?.stop(); audio = nil; guidance.reset(); images.removeAll()
-        startButton.title = "Start guidance"; settings.forEach { $0.isEnabled = true }; status.stringValue = "Guidance stopped"
+        startButton.title = "Start backend"; settings.forEach { $0.isEnabled = true }; status.stringValue = "Backend stopped"
         visionStatus.stringValue = "Local vision off"; detail.stringValue = ""
         frontPreview.observations = []; feetPreview.observations = []
     }
     private func tick() {
         tracking.stringValue = tracker.instruction
+        if referenceGeneration != tracker.generation {
+            referenceGeneration = tracker.generation
+            guidance.reset(); images.removeAll(); audio?.mute()
+            frontPreview.observations = []; feetPreview.observations = []
+        }
         guard running else { return }
+        if guidance.isPaused {
+            audio?.mute(); status.stringValue = "Guidance paused"
+            detail.stringValue = "Say Hey Seear, resume guidance"; return
+        }
         let now = ProcessInfo.processInfo.systemUptime
         let route = AudioOutput.current
         if route.id != outputRoute.id || route.channels < 2 {
-            stop(); announce("Audio output changed. Check AirPods and restart guidance.",force:true); return
+            stop(); announce("Audio output changed. Restore AirPods output, then say Hey Seear, resume guidance.",force:true); return
         }
         let poseOK = tracker.usable && abs(tracker.pitchOffset) < 12
         if worker?.ready == true, worker?.busy == false, poseOK {
@@ -209,7 +218,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         var state = guidance.evaluate(now:now,yaw:tracker.yaw,tracking:poseOK)
         if !visionOK { state = Guidance(target:nil,obstacle:nil,status:"Loading or waiting for local vision. Guidance paused.",fault:true) }
         if tracker.usable && abs(tracker.pitchOffset) >= 12 {
-            state = Guidance(target:nil,obstacle:nil,status:"Head tilted. Return to calibrated pitch.",fault:true)
+            state = Guidance(target:nil,obstacle:nil,status:"Head tilted. Return to the starting head pitch.",fault:true)
         }
         audio?.update(state,yaw:tracker.yaw); status.stringValue = state.status
         if let obstacle = state.obstacle { detail.stringValue = String(format:"Obstacle ~%.1f m · %.0f° relative to head",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }

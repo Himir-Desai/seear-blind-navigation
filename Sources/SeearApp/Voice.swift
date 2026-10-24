@@ -11,23 +11,27 @@ final class VoiceInput {
     private var listening = false, tapped = false, handled = false
     private var epoch = 0
     private var authorizationEpoch = 0
+    private var starting = false
     var onCommand: ((VoiceCommand) -> Void)?
     var onStatus: ((String) -> Void)?
+    var onUnavailable: ((String) -> Void)?
     func start() {
+        guard !starting, !listening else { return }
         authorizationEpoch += 1
         let authorization = authorizationEpoch
         guard recognizer?.supportsOnDeviceRecognition == true else {
-            onStatus?("On-device English recognition is unavailable. Use the Find field."); return
+            fail("On-device English recognition is unavailable; ask the supervisor to check speech setup."); return
         }
+        starting = true
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 guard self?.authorizationEpoch == authorization else { return }
-                guard status == .authorized else { self?.onStatus?("Speech permission denied"); return }
+                guard status == .authorized else { self?.fail("Speech permission denied."); return }
                 AVCaptureDevice.requestAccess(for: .audio) { allowed in
                     DispatchQueue.main.async {
                         guard self?.authorizationEpoch == authorization else { return }
-                        guard allowed else { self?.onStatus?("Microphone permission denied"); return }
-                        self?.listening = true; self?.listen()
+                        guard allowed else { self?.fail("Microphone permission denied."); return }
+                        self?.starting = false; self?.listening = true; self?.listen()
                     }
                 }
             }
@@ -43,7 +47,7 @@ final class VoiceInput {
         request.contextualStrings = ["Hey Seear", "backpack", "white cane"]
         self.request = request; handled = false
         let input = engine.inputNode, format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { onStatus?("Microphone unavailable"); return }
+        guard format.sampleRate > 0, format.channelCount > 0 else { fail("Microphone unavailable."); return }
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
         tapped = true
         task = recognizer?.recognitionTask(with: request) { [weak self] result, error in
@@ -57,7 +61,7 @@ final class VoiceInput {
             }
         }
         do { try engine.start(); onStatus?("Listening locally · say Hey Seear, where is my backpack") }
-        catch { onStatus?(error.localizedDescription); stop() }
+        catch { fail(error.localizedDescription); return }
         restart = Timer.scheduledTimer(withTimeInterval: 50, repeats: false) { [weak self] _ in self?.listen() }
     }
     private func scheduleRestart(epoch: Int) {
@@ -71,6 +75,10 @@ final class VoiceInput {
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
         request?.endAudio(); task?.cancel(); task = nil; request = nil
     }
-    func stop() { authorizationEpoch += 1; listening = false; tearDown(); onStatus?("Voice off") }
+    private func fail(_ message: String) {
+        authorizationEpoch += 1; starting = false; listening = false; tearDown()
+        onStatus?(message); onUnavailable?(message)
+    }
+    func stop() { authorizationEpoch += 1; starting = false; listening = false; tearDown(); onStatus?("Voice off") }
     deinit { stop() }
 }

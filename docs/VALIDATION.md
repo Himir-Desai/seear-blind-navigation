@@ -4,7 +4,7 @@ Date: 2026-10-24. Host: Apple Silicon MacBook Air, 16 GB, macOS 27, Swift 6.4, P
 
 ## Automated checks
 
-Final checks after code corrections:
+Initial Demo 1 baseline, before B3:
 
 | Check | Result |
 | --- | --- |
@@ -33,18 +33,31 @@ Model revisions are pinned in `vision/backend.py`. The detector uses float16 on 
 
 ## Native UI
 
-The signed app was opened with `--ui-preview` and inspected through the actual window screenshot and accessibility tree. Camera selectors, geometry fields, calibration, start/stop, voice controls, item controls and status text fit and are readable. This mode does not request motion, microphone or camera access. `--ui-smoke` additionally exercises window creation and a cached view PNG, then exits; macOS compositor-rendered controls are verified using the actual window, not that cached PNG.
+The initial signed app was opened with `--ui-preview` and inspected through the actual window screenshot and accessibility tree. Camera selectors, geometry fields, the original calibration controls, start/stop, voice controls, item controls and status text fit and were readable. B3 removes those calibration controls and updates the wearer instructions; its UI recheck is recorded below. This mode does not request motion, microphone or camera access. `--ui-smoke` additionally exercises window creation and a cached view PNG, then exits; macOS compositor-rendered controls are verified using the actual window, not that cached PNG.
 
 ## Hardware acceptance still required
 
-The Mac's camera inventory during inspection listed its built-in camera and an iPhone Continuity Camera. The requested pair of cap-mounted USB cameras was not available for a physical run. AirPods calibration involves a physical right-head-turn and cannot be established by software simulation.
+The Mac's camera inventory during inspection listed its built-in camera and an iPhone Continuity Camera. The requested pair of cap-mounted USB cameras was not available for a physical run. B3 initializes the motion reference automatically. Physical left/right alignment, turn behavior and microphone recognition still cannot be established by software simulation.
 
 Before any supervised walking test:
 
 - Connect the actual two USB cameras and motion-capable AirPods. Verify front/feet assignment and that previews correspond to the physical view. Grant app permissions through macOS.
 - Measure camera FOV, mounting angles and cap height; estimate a depth scale from several known ranges. Confirm floor exclusion and alert positions while standing still. Check left/right/front cues on AirPods and normal stereo output with voice enabled.
 - Find the actual backpack and white cane in varied indoor lighting, against clutter, with partial occlusions and multiple similar objects. Measure missed detections, false detections, direction errors, range errors and target loss. Category detection does not prove ownership.
-- Check obstacle alerts while finding an item. Confirm urgent hazards suppress the item, off-path objects do not dominate, and camera disconnection, head-tracking loss, tilted head, out-of-view walking direction and slow inference announce a pause.
-- Test only slow, supervised straight segments with an existing mobility aid. Reset walking direction before a turn. Assess latency while moving; this implementation has no translation tracking, drop-off detection, route planning or validated stopping distance.
+- Check obstacle alerts while finding an item. Confirm urgent hazards suppress the item, off-path objects do not dominate, and camera disconnection, head-tracking loss, tilted head and slow inference announce a pause. Turn through 90°/180° without any reset and verify that the alert corridor follows the camera. Confirm spoken pause/resume works without touching the Mac and that resume waits for new frames.
+- Test slow supervised movement and turns with an existing mobility aid. Looking sideways can leave the actual travel path outside the cap cameras; the software does not estimate body travel direction. No manual direction reset is required. Assess latency while moving; this implementation has no translation tracking, drop-off detection, route planning or validated stopping distance.
 
 No real-world walking reliability, white-cane detection accuracy, personal-item recognition, listening comfort or blind-participant validation is claimed by the automated tests.
+
+## B3 camera-forward and hands-free correction
+
+The fixed walking-heading gate and wearer-facing calibration controls were removed. Forward now follows current cap-camera/head yaw. Startup establishes an arbitrary motion reference automatically, retains capture-to-playback rotation compensation, enables local voice, and supports spoken pause/resume without a Mac click. A new motion reference discards old capture history and in-flight scenes.
+
+B3 validation completed:
+
+- `bash verify.sh`: signed release build, 18 Swift tests, 5 Python tests and all 6 real HRTF checks passed.
+- New regressions cover left/right/about-turns, the ±180° seam, a fixed scene during a head turn, a newly forward hazard after a turn, automatic first-sample reference, motion reconnection, rejected old motion, wake-word commands and paused/resumed scene freshness.
+- The native `--ui-preview` window was checked through its actual screenshot and accessibility tree. Calibration/Set forward buttons are absent, backend/debug controls and voice instructions are visible, and the full layout remains readable. The preview kept cameras, microphone and motion services off. Its camera inventory listed the built-in camera and one USB camera at this inspection.
+- Shell syntax and whitespace checks passed. Model code and the scene pipe contract were unchanged; the real-model benchmark above remains the initial baseline and was not rerun for this correction.
+
+Voice tests exercise command parsing and guidance state, not physical speech recognition. Actual microphone reach, on-device recognition availability, AirPods left/right alignment and cap-camera turn behavior require supervised hardware acceptance. No such acceptance is claimed.
