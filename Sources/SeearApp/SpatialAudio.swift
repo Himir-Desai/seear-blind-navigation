@@ -4,7 +4,7 @@ import os
 import SeearCore
 
 /// Adapted from P4 Hybrid 2.1. Two mono voices pass through Apple's HRTFHQ;
-/// hazard voices deliberately have no FOV mute and use a distinct higher tone.
+/// Item: inherited soft single pulse. Hazard: bright two-note double beep, no FOV mute.
 final class PulseVoice {
     struct Control { var gain = 0.0; var rate = 1.0; var sharpness = 1.0; var hazard = false }
     private let control = OSAllocatedUnfairLock(initialState: Control())
@@ -19,12 +19,23 @@ final class PulseVoice {
             self.gain += (self.current.gain - self.gain) * 0.001
             self.rate += (self.current.rate - self.rate) * 0.001
             self.phase += self.rate / 48000; self.phase -= floor(self.phase)
-            self.tone += (self.current.hazard ? 880 : 440) / 48000; self.tone -= floor(self.tone)
+            let frequency = self.current.hazard ? (self.phase < 0.3 ? 1200.0 : 1800.0) : 440.0
+            self.tone += frequency / 48000; self.tone -= floor(self.tone)
             self.noise ^= self.noise << 13; self.noise ^= self.noise >> 7; self.noise ^= self.noise << 17
             let white = Double(self.noise >> 11) / 9007199254740992 * 2 - 1
-            let envelope = pow(0.5 + 0.5 * cos(2 * .pi * self.phase), 8)
-            let harmonic = (sin(2 * .pi * self.tone) + 0.35 * self.current.sharpness * sin(4 * .pi * self.tone)) / 1.35
-            let sample = Float(self.gain * envelope * (0.1 * white + 0.05 * harmonic))
+            let envelope: Double, carrier: Double
+            if self.current.hazard {
+                // Two short, smoothly gated notes per cycle, with a clear gap.
+                let local = self.phase < 0.3 ? self.phase / 0.18 : (self.phase - 0.3) / 0.18
+                envelope = local >= 0 && local < 1 ? pow(sin(.pi * local),2) : 0
+                let harmonic = (sin(2 * .pi * self.tone) + 0.25 * sin(4 * .pi * self.tone)) / 1.25
+                carrier = 0.08 * white + 0.075 * harmonic
+            } else {
+                envelope = pow(0.5 + 0.5 * cos(2 * .pi * self.phase),8)
+                let harmonic = (sin(2 * .pi * self.tone) + 0.35 * self.current.sharpness * sin(4 * .pi * self.tone)) / 1.35
+                carrier = 0.1 * white + 0.05 * harmonic
+            }
+            let sample = Float(self.gain * envelope * carrier)
             for buffer in buffers { buffer.mData?.assumingMemoryBound(to: Float.self)[frame] = sample }
         }
         return noErr
@@ -34,7 +45,7 @@ final class PulseVoice {
             guard let cue else { state.gain = 0; return }
             state = Control(gain: SoundMapping.gain(cue.distance) * cue.level *
                             (cue.hazard ? 1 : SoundMapping.visibility(angle: relativeAngle, distance: cue.distance)),
-                            rate: cue.hazard ? min(8, SoundMapping.rate(cue.distance) * 1.4) : SoundMapping.rate(cue.distance),
+                            rate: cue.hazard ? min(5, SoundMapping.rate(cue.distance) * 1.4) : SoundMapping.rate(cue.distance),
                             sharpness: cue.hazard ? 1 : SoundMapping.sharpness(relativeAngle), hazard: cue.hazard)
         }
     }
