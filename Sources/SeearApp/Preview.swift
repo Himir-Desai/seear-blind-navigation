@@ -19,7 +19,7 @@ final class CameraPreview: NSView {
             let box = NSRect(x: rect.minX + b[0]*w, y: rect.minY + b[1]*h,
                              width: (b[2]-b[0])*w, height: (b[3]-b[1])*h)
             NSColor.systemMint.setStroke(); let path = NSBezierPath(rect: box); path.lineWidth = 2; path.stroke()
-            let label = String(format: "%@ · ~%.1f m", o.label, o.distance)
+            let label = String(format: "%@ · score %.2f · ~%.1f m", o.label, o.confidence, o.distance)
             (label as NSString).draw(at: NSPoint(x: box.minX+4, y: max(rect.minY,box.minY-20)),
                 withAttributes: [.foregroundColor: NSColor.systemMint, .font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
         }

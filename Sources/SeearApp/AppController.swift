@@ -32,7 +32,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildUI()
-        if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-preview") || CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-map-preview") {
+        if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-preview") || CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-map-preview") || CommandLine.arguments.contains("--ui-item-preview") || CommandLine.arguments.contains("--ui-item-smoke") {
             status.stringValue = "UI verification · synthetic preview"
             if CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-map-preview") {
                 if let data = try? Data(contentsOf:root.appendingPathComponent("build/map-ui-fixture.json")),
@@ -41,7 +41,20 @@ final class AppController: NSObject, NSApplicationDelegate {
                 } else { mapView.error = "Missing synthetic mapping UI fixture" }
                 showRoomMap()
             }
-            if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-map-smoke") {
+            if CommandLine.arguments.contains("--ui-item-preview") || CommandLine.arguments.contains("--ui-item-smoke") {
+                let image = NSImage(contentsOf:root.appendingPathComponent("build/inference-sample.png"))
+                frontPreview.image = image?.cgImage(forProposedRect:nil,context:nil,hints:nil)
+                feetPreview.image = frontPreview.image
+                let now = ProcessInfo.processInfo.systemUptime
+                guidance.search("cat")
+                let best = Observation(label:"cat",confidence:0.9,bearing:-15,distance:2,box:[0.1,0.1,0.5,0.85])
+                let other = Observation(label:"cat",confidence:0.4,bearing:15,distance:2,box:[0.5,0.1,0.95,0.85])
+                guidance.ingest(SceneFrame(feed:"front",captured:now,yaw:0,target:"cat",objects:[other,best],obstacles:[]))
+                guidance.ingest(SceneFrame(feed:"feet",captured:now,yaw:0,target:"cat",objects:[other],obstacles:[]))
+                _ = guidance.evaluate(now:now,yaw:0,tracking:true); updateItemPreview()
+                detail.stringValue = "Synthetic QA · one selected item across both feeds · score 0.90"
+            }
+            if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-item-smoke") {
                 DispatchQueue.main.asyncAfter(deadline: .now()+0.6) { self.captureUI(); NSApp.terminate(nil) }
             }
             return
@@ -186,7 +199,6 @@ final class AppController: NSObject, NSApplicationDelegate {
                 if frame.feed == "feet", let filter = frame.wearerFilter, filter.valid {
                     self.visionStatus.stringValue = "Local vision · feet: \(filter.shoes) shoe candidates, \(filter.excludedPixels) pixels excluded"
                 }
-                (frame.feed == "front" ? self.frontPreview : self.feetPreview).observations = frame.objects
                 self.visionOK = true
             }
             worker.onStatus = { [weak self] message, ok in
@@ -226,6 +238,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         guard running else { return }
         if guidance.isPaused {
+            updateItemPreview()
             audio?.mute(); status.stringValue = "Guidance paused"
             detail.stringValue = "Say Hey Seear, resume guidance"; return
         }
@@ -246,14 +259,24 @@ final class AppController: NSObject, NSApplicationDelegate {
         if tracker.usable && abs(tracker.pitchOffset) >= 12 {
             state = Guidance(target:nil,obstacle:nil,status:"Head tilted. Return to the starting head pitch.",fault:true)
         }
+        updateItemPreview()
         audio?.update(state,yaw:tracker.yaw); status.stringValue = state.status
         if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? "Feet camera" : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
         else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw)) }
         else { detail.stringValue = "No current directional cue" }
         if state.fault && now-started > 4 { announce(state.status) }
         else if !state.fault && previouslyFaulted { announce("Guidance active") }
-        else if !guidance.target.isEmpty && state.target == nil && state.obstacle == nil && !state.fault { announce("Target not currently located. Continue scanning.") }
+        else if !guidance.target.isEmpty && state.target == nil && state.obstacle == nil && !state.fault {
+            announce(guidance.needsItemReselection ? "Item tracking reset. Say Hey Seear, find \(guidance.target) to select again." : "Target not currently located. Continue scanning.")
+        }
         previouslyFaulted = state.fault
+    }
+    private func updateItemPreview() {
+        let selected = guidance.selectedItem
+        let front = selected?.feed == "front" ? [selected!.observation] : []
+        let feet = selected?.feed == "feet" ? [selected!.observation] : []
+        if frontPreview.observations != front { frontPreview.observations = front }
+        if feetPreview.observations != feet { feetPreview.observations = feet }
     }
     private func announce(_ message: String, force: Bool = false) {
         let now = ProcessInfo.processInfo.systemUptime
@@ -274,7 +297,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let mapping = CommandLine.arguments.contains("--ui-map-smoke")
         guard let view = mapping ? mapWindow?.contentView : window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in:view.bounds) else { return }
         view.cacheDisplay(in:view.bounds,to:rep)
-        if let data = rep.representation(using:.png,properties:[:]) { try? data.write(to:root.appendingPathComponent(mapping ? "build/map-ui-smoke.png" : "build/ui-smoke.png")) }
+        if let data = rep.representation(using:.png,properties:[:]) { try? data.write(to:root.appendingPathComponent(mapping ? "build/map-ui-smoke.png" : CommandLine.arguments.contains("--ui-item-smoke") ? "build/item-ui-smoke.png" : "build/ui-smoke.png")) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) { stop(); timer?.invalidate(); tracker.stop(); voice.stop() }

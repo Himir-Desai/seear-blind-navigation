@@ -28,7 +28,7 @@ The Mac interface is for the developer or sighted supervisor to configure and de
 
 The monitored corridor follows **head direction**, not an inferred body travel direction. Looking sideways while continuing to walk can leave the travel path outside the camera view. This version does not claim to monitor unseen hazards or infer walking intent. Supervised turn testing is still required.
 
-The item cue is a pulsed broadband/440 Hz sound, with faster pulses and stronger level when the estimated item is nearer. The obstacle cue is higher pitched and faster. Sounds indicate object locations, not a safe direction to walk. A close hazard suppresses the item sound; other in-path hazards duck it. Target loss stops its directional cue; Find again to select a different instance. Thin white canes may be missed and require specific real-scene evaluation.
+The item cue is a softer single broadband/440 Hz pulse. Obstacle alerts are brighter **two-note double beeps (1200/1800 Hz)** with a clear gap. Both accelerate and strengthen as the estimated distance decreases, and both use spatial audio. Sounds indicate object locations, not a safe direction to walk. A close hazard suppresses the item sound; other in-path hazards duck it. A search initially picks only the highest-confidence valid match across both fresh feeds, then keeps that item using feed, bearing/range and bounding-box continuity. The preview shows only that selected match and its score. A higher-scoring newcomer does not replace it. Target loss stops its directional cue; repeat the voice Find command to select a different instance. A backend/motion-reference reset requires Find again because the previous identity cannot be retained in a new frame. Thin white canes may be missed and require specific real-scene evaluation.
 
 The feet feed uses local shoe/leg detection plus RGB and estimated near-body checks to reduce alerts from worn footwear. It does not ignore an entire near-feet area. The debug status shows candidate shoes and excluded pixels, and obstacle text identifies the camera and **horizontal** range. See [footwear filtering](docs/FOOTWEAR_FILTER.md) for limits and the physical regression check.
 
@@ -50,6 +50,8 @@ The app uses AppKit, AVFoundation HRTFHQ, CoreMotion and on-device Speech. A pri
 bash verify.sh
 open -n build/Seear.app --args --ui-smoke
 ```
+
+`bash verify.sh` also writes `build/item-cue.wav` and `build/obstacle-cue.wav` for comparing the two rendered sounds on headphones.
 
 The UI smoke command writes `build/ui-smoke.png` and exits without opening cameras or starting head tracking. Automated checks do not replace a supervised cap-camera/AirPods trial. See [validation record](docs/VALIDATION.md) for checks actually performed and the remaining hardware checks.
 
