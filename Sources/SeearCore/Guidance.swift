@@ -109,6 +109,7 @@ public struct Guidance {
 public final class GuidanceEngine {
     public var target: String = ""
     public var maxAge: Double = 1.5
+    public var itemConfidencePolicy = ItemConfidencePolicy.demo
     public private(set) var isPaused = false
     public private(set) var frames: [String: SceneFrame] = [:]
     /// One accepted item for the debug overlay, including while an urgent hazard mutes its sound.
@@ -117,6 +118,7 @@ public final class GuidanceEngine {
         var feed: String
         var bearing: Double
         var distance: Double
+        var confidence: Double
         var box: [Double]
         var yaw: Double
         var captured: Double
@@ -160,10 +162,13 @@ public final class GuidanceEngine {
         var candidates: [(SceneFrame, Observation)] = []
         if !target.isEmpty {
             for f in fresh where f.target == target {
-                for o in f.objects where o.valid && o.confidence >= 0.15 && o.label == target { candidates.append((f, o)) }
+                for o in f.objects where o.valid && o.label == target { candidates.append((f, o)) }
             }
         }
+        let eligible = candidates.filter { itemConfidencePolicy.accepts($0.1.confidence) }
+        let best = eligible.max { $0.1.confidence < $1.1.confidence }
         let selected: (SceneFrame, Observation)?
+        var associatedCurrent: (SceneFrame,Observation)?
         if let lock = lockedTarget {
             func overlap(_ a: [Double], _ b: [Double]) -> Double? {
                 guard a.count == 4, b.count == 4, (a+b).allSatisfy(\.isFinite),
@@ -182,16 +187,26 @@ public final class GuidanceEngine {
                 return (frame,observation,angle/20+range/rangeGate+(iou.map { 1-$0 } ?? 0))
             }
             let match = matches.min { a,b in a.2 == b.2 ? a.1.confidence > b.1.confidence : a.2 < b.2 }
-            selected = match.map { ($0.0,$0.1) }
+            associatedCurrent = match.map { ($0.0,$0.1) }
+            let reference = associatedCurrent?.1.confidence ?? lock.confidence
+            let referenceTime = associatedCurrent?.0.captured ?? lock.captured
+            let challenger = eligible.filter { $0.0.captured >= referenceTime }.max { $0.1.confidence < $1.1.confidence }
+            if let challenger, itemConfidencePolicy.permitsSwitch(to:challenger.1.confidence,from:reference) {
+                selected = challenger
+            } else {
+                selected = associatedCurrent.flatMap { itemConfidencePolicy.accepts($0.1.confidence) ? $0 : nil }
+            }
         } else if !acquiredItem {
-            selected = candidates.max { $0.1.confidence < $1.1.confidence }
+            selected = best
         } else {
             // A reference/backend reset invalidated the identity. Require Find again.
             selected = nil
         }
-        if let (frame,observation) = selected {
+        // A weak current association can update the comparison score without
+        // emitting an item cue or box below the floor.
+        if let (frame,observation) = selected ?? associatedCurrent {
             lockedTarget = ItemLock(feed:frame.feed,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
-                                    box:observation.box,yaw:frame.yaw,captured:frame.captured)
+                                    confidence:observation.confidence,box:observation.box,yaw:frame.yaw,captured:frame.captured)
             acquiredItem = true
         }
         if let (frame,observation) = selected { selectedItem = (frame.feed,observation) }

@@ -56,10 +56,10 @@ final class GuidanceTests: XCTestCase {
         XCTAssertNil(e.evaluate(now:10,yaw:0,tracking:true).target)
         e.ingest(frame("front",time:9,coverage:0)); XCTAssertEqual(e.frames["front"]?.captured,10)
     }
-    func testTargetLossDoesNotReplayOrSwitchToDifferentInstance() {
+    func testTargetLossDoesNotReplayOrSwitchWithinTheMargin() {
         let e = ready(); e.search("backpack"); e.ingest(frame("front",objects:[bag]))
         XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
-        e.ingest(frame("front",objects:[Observation(label:"backpack",confidence:0.99,bearing:-30,distance:2)]))
+        e.ingest(frame("front",objects:[Observation(label:"backpack",confidence:0.85,bearing:-30,distance:2)]))
         XCTAssertNil(e.evaluate(now:10,yaw:0,tracking:true).target)
         e.ingest(frame("front",objects:[bag])); XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
     }
@@ -75,14 +75,14 @@ final class GuidanceTests: XCTestCase {
         XCTAssertEqual(e.selectedItem?.feed,"feet")
         XCTAssertEqual(e.selectedItem?.observation,best)
     }
-    func testKeepsChosenItemWhenAnotherMatchGetsHigherScore() {
+    func testKeepsChosenItemUntilChallengerClearsTheMargin() {
         let e = ready(); e.search("backpack")
         let chosen = Observation(label:"backpack",confidence:0.9,bearing:0,distance:2,box:[0.25,0.2,0.45,0.8])
         let other = Observation(label:"backpack",confidence:0.7,bearing:3,distance:2,box:[0.6,0.2,0.8,0.8])
         e.ingest(frame("front",objects:[other,chosen]))
         XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
-        var moved = chosen; moved.bearing = 2; moved.confidence = 0.3; moved.box = [0.27,0.2,0.47,0.8]
-        var competitor = other; competitor.confidence = 0.99
+        var moved = chosen; moved.bearing = 2; moved.confidence = 0.7; moved.box = [0.27,0.2,0.47,0.8]
+        var competitor = other; competitor.confidence = 0.8
         e.ingest(frame("front",time:10.2,objects:[competitor,moved]))
         e.ingest(frame("feet",time:10.2,objects:[competitor]))
         XCTAssertEqual(e.evaluate(now:10.2,yaw:0,tracking:true).target?.bearing,2)
@@ -90,7 +90,7 @@ final class GuidanceTests: XCTestCase {
         e.ingest(frame("front",time:10.3,objects:[competitor]))
         XCTAssertNil(e.evaluate(now:10.3,yaw:0,tracking:true).target)
         XCTAssertNil(e.selectedItem)
-        e.search("backpack") // Explicit Find is the only way to pick the other item.
+        e.search("backpack") // Explicit Find can select a candidate without the switching margin.
         XCTAssertEqual(e.evaluate(now:10.3,yaw:0,tracking:true).target?.bearing,competitor.bearing)
     }
     func testStaleFramesAndTrackingFaultDoNotReleaseChosenItem() {
@@ -99,7 +99,7 @@ final class GuidanceTests: XCTestCase {
         XCTAssertTrue(e.evaluate(now:12,yaw:0,tracking:true).fault)
         XCTAssertNil(e.selectedItem)
         XCTAssertTrue(e.evaluate(now:12,yaw:0,tracking:false).fault)
-        let other = Observation(label:"backpack",confidence:0.99,bearing:-30,distance:2)
+        let other = Observation(label:"backpack",confidence:0.85,bearing:-30,distance:2)
         e.ingest(frame("front",time:12,objects:[other])); e.ingest(frame("feet",time:12))
         XCTAssertNil(e.evaluate(now:12,yaw:0,tracking:true).target)
         e.ingest(frame("front",time:12.1,objects:[bag,other]))
@@ -109,7 +109,7 @@ final class GuidanceTests: XCTestCase {
         let e = ready(); e.search("backpack"); e.ingest(frame("front",objects:[bag]))
         XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
         e.pause(); XCTAssertNil(e.selectedItem); e.resume()
-        let other = Observation(label:"backpack",confidence:0.99,bearing:-30,distance:2)
+        let other = Observation(label:"backpack",confidence:0.85,bearing:-30,distance:2)
         e.ingest(frame("front",time:11,objects:[other,bag])); e.ingest(frame("feet",time:11))
         XCTAssertEqual(e.evaluate(now:11,yaw:0,tracking:true).target?.bearing,bag.bearing)
         e.reset() // New motion reference cannot reuse old absolute bearings.

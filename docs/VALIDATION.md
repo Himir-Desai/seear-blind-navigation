@@ -120,3 +120,16 @@ open -n build/Seear.app --args --ui-item-smoke
 It writes `build/item-ui-smoke.png` and exits. `--ui-item-preview` keeps the same synthetic case open. `bash verify.sh` writes both WAV comparisons as part of the audio check.
 
 The detector/worker/model code and inference deadline are unchanged in 1.1, so cached-model latency was not rerun; the B4 result above remains the last measured baseline. Real cap/AirPods testing must check cue recognition while walking, stable association of similar nearby items and target loss. B5 remains open: a high-scoring false positive can still be selected. Association uses geometry/box continuity, not verified persistent visual identity or ownership.
+
+## 1.2: item confidence cutoff and relative switching margin
+
+The user selected x=0.50 and y=0.10, with switching relative to the current item's score rather than fixed x+y. Guidance acquires/shows/sounds an item only above x. A fresh challenger must beat the current associated score by more than y; equal-margin scores do not switch. A weak associated match can update the comparison score without producing a cue or box; a completely missing item uses its last observed score for comparison. No previous cue is replayed when the current observation is absent/below cutoff. Obstacle guidance remains independent.
+
+Completed validation:
+
+- Signed release build, **32 Swift tests**, **26 Python tests** and **9 actual HRTF checks** passed. Eight new policy/integration tests cover strict acquisition and drop-out boundaries, relative vs fixed thresholds, exact/near-decimal switching boundaries, weak/missing current detections, custom configuration, invalid numeric values, older challenger frames, cross-feed switching and retention inside the margin. Existing lock regressions were updated for the user-authorized automatic switching behavior; obstacle priority, pause/reset and fresh-scene checks still pass.
+- Native `--ui-item-preview` screenshot/accessibility inspection verified readable **Min x=0.50** and **Switch +y=0.10** controls in the item row. The synthetic scenario acquired 0.65, observed its score fall to 0.60, and switched to a challenger at 0.75. Only the switched candidate's box/score appeared across both feeds. Hardware services stayed off.
+- Configuration validates finite values, x≥0.15, y≥0 and x+y<1 before backend start; the controls follow the existing setup convention and are locked during a run. Core policy validation and applied nondefault values are covered by Swift tests. UI error speech/permission interaction was not exercised.
+- Shell syntax and Git whitespace checks passed. Model/worker inference and freshness cutoffs did not change, so cached-model cadence was not rerun. The B4 timing baseline remains the last actual model/native measurement.
+
+These thresholds filter model scores, not calibrated probabilities. No real positive/negative cap-footage evaluation was performed to select or calibrate them. A strict 0.50 cutoff can reject actual items as well as false detections; B5 remains unresolved. Validate the selected scores on actual present/absent item scenes before treating cue availability as evidence that an object is in view.
