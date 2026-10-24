@@ -24,6 +24,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 detail = NSTextField(labelWithString: ""), frontSelect = NSPopUpButton(), feetSelect = NSPopUpButton(),
                 startButton = NSButton(title: "Start backend", target: nil, action: nil),
                 target = NSTextField(string: "backpack"), frontPreview = CameraPreview(), feetPreview = CameraPreview()
+    private let itemMinimum = NSTextField(string:"0.50"), itemSwitchMargin = NSTextField(string:"0.10")
     private var geometryFields: [[NSTextField]] = []
     private var settings: [NSControl] = []
     private var root: URL {
@@ -47,12 +48,16 @@ final class AppController: NSObject, NSApplicationDelegate {
                 feetPreview.image = frontPreview.image
                 let now = ProcessInfo.processInfo.systemUptime
                 guidance.search("cat")
-                let best = Observation(label:"cat",confidence:0.9,bearing:-15,distance:2,box:[0.1,0.1,0.5,0.85])
-                let other = Observation(label:"cat",confidence:0.4,bearing:15,distance:2,box:[0.5,0.1,0.95,0.85])
+                let best = Observation(label:"cat",confidence:0.65,bearing:-15,distance:2,box:[0.1,0.1,0.5,0.85])
+                let other = Observation(label:"cat",confidence:0.55,bearing:15,distance:2,box:[0.5,0.1,0.95,0.85])
                 guidance.ingest(SceneFrame(feed:"front",captured:now,yaw:0,target:"cat",objects:[other,best],obstacles:[]))
                 guidance.ingest(SceneFrame(feed:"feet",captured:now,yaw:0,target:"cat",objects:[other],obstacles:[]))
-                _ = guidance.evaluate(now:now,yaw:0,tracking:true); updateItemPreview()
-                detail.stringValue = "Synthetic QA · one selected item across both feeds · score 0.90"
+                _ = guidance.evaluate(now:now,yaw:0,tracking:true)
+                var current = best; current.confidence = 0.60
+                var challenger = other; challenger.confidence = 0.75
+                guidance.ingest(SceneFrame(feed:"front",captured:now+0.1,yaw:0,target:"cat",objects:[current,challenger],obstacles:[]))
+                _ = guidance.evaluate(now:now+0.1,yaw:0,tracking:true); updateItemPreview()
+                detail.stringValue = "Synthetic QA · switched one item from 0.60 to 0.75 · min 0.50, margin 0.10"
             }
             if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-item-smoke") {
                 DispatchQueue.main.asyncAfter(deadline: .now()+0.6) { self.captureUI(); NSApp.terminate(nil) }
@@ -111,7 +116,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         mapEnabled.state = .on; settings.append(mapEnabled)
         stack.addArrangedSubview(row([startButton,button("Retry voice",#selector(enableVoice)),button("Disable voice (debug)",#selector(disableVoice)),mapEnabled,button("Room map (debug)",#selector(showRoomMap))]))
         target.widthAnchor.constraint(equalToConstant:240).isActive = true; target.setAccessibilityLabel("Item to find")
-        stack.addArrangedSubview(row([text("Find an item"),target,button("Find",#selector(find)),button("Cancel search",#selector(cancelSearch))]))
+        for field in [itemMinimum,itemSwitchMargin] { field.widthAnchor.constraint(equalToConstant:48).isActive = true; settings.append(field) }
+        itemMinimum.setAccessibilityLabel("Item minimum confidence x")
+        itemSwitchMargin.setAccessibilityLabel("Item switching margin y")
+        itemMinimum.toolTip = "Only show or sound an item with a model score strictly above x."
+        itemSwitchMargin.toolTip = "Switch only when the best candidate exceeds the current item's score by more than y."
+        stack.addArrangedSubview(row([text("Find an item"),target,button("Find",#selector(find)),button("Cancel search",#selector(cancelSearch)),text("Min x",size:12),itemMinimum,text("Switch +y",size:12),itemSwitchMargin]))
         stack.addArrangedSubview(text("Voice starts with the backend. Say “Hey Seear, where is my backpack”, “pause guidance”, or “resume guidance”. “Hey Seear, stop” cancels search. Forward follows the cap as you turn.",size:13))
         status.font = .systemFont(ofSize:20,weight:.semibold); status.setAccessibilityLabel("Guidance status")
         stack.addArrangedSubview(status); stack.addArrangedSubview(detail)
@@ -164,6 +174,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         if running { stop(); return }
         guard devices.indices.contains(frontSelect.indexOfSelectedItem), devices.indices.contains(feetSelect.indexOfSelectedItem),
               frontSelect.indexOfSelectedItem != feetSelect.indexOfSelectedItem else { announce("Choose two different connected cameras",force:true); return }
+        guard let minimum = Double(itemMinimum.stringValue), minimum >= 0.15,
+              let margin = Double(itemSwitchMargin.stringValue),
+              let policy = ItemConfidencePolicy(minimum:minimum,switchMargin:margin) else {
+            announce("Set item minimum x from 0.15 to below 1, margin y at least zero, and x plus y below 1.",force:true); return
+        }
+        guidance.itemConfidencePolicy = policy
         for (i,feed) in ["front","feet"].enumerated() {
             let v = geometryFields[i].map { Double($0.stringValue) ?? .nan }
             guard v.allSatisfy(\.isFinite), (20...140).contains(v[0]), (-30...90).contains(v[1]), (0.5...2.5).contains(v[2]), (0.1...5).contains(v[3]) else {
@@ -263,7 +279,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         audio?.update(state,yaw:tracker.yaw); status.stringValue = state.status
         if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? "Feet camera" : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
         else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw)) }
-        else { detail.stringValue = "No current directional cue" }
+        else if !guidance.target.isEmpty && !state.fault {
+            detail.stringValue = String(format:"No current item match above %.2f",guidance.itemConfidencePolicy.minimum)
+        } else { detail.stringValue = "No current directional cue" }
         if state.fault && now-started > 4 { announce(state.status) }
         else if !state.fault && previouslyFaulted { announce("Guidance active") }
         else if !guidance.target.isEmpty && state.target == nil && state.obstacle == nil && !state.fault {
