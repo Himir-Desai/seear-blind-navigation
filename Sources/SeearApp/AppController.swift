@@ -126,7 +126,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         status.font = .systemFont(ofSize:20,weight:.semibold); status.setAccessibilityLabel("Guidance status")
         stack.addArrangedSubview(status); stack.addArrangedSubview(detail)
         stack.addArrangedSubview(row([visionStatus,voiceStatus]))
-        stack.addArrangedSubview(text("Setup: wear AirPods and select stereo output. Choose a microphone that can hear the wearer. Check left/right audio before use. No heading calibration or turn reset is required; large pitch changes still pause guidance.",size:12))
+        stack.addArrangedSubview(text("Setup: wear AirPods and select stereo output. Choose a microphone that can hear the wearer. Check left/right audio before use. No heading calibration or turn reset is required; head pitch and roll are compensated automatically.",size:12))
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         let menu = NSMenu(), item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu(); appMenu.addItem(withTitle:"Quit Seear",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q"); item.submenu = appMenu; NSApp.mainMenu = menu
@@ -229,8 +229,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 camera.onFrame = { [weak self] image, stamp in
                     guard let self, self.running else { return }
                     (feed == "front" ? self.frontPreview : self.feetPreview).image = image
-                    guard let captureYaw = self.tracker.yaw(at:stamp) else { self.images.removeValue(forKey:feed); return }
-                    self.images[feed] = CapturedImage(image:image,timestamp:stamp,yaw:captureYaw)
+                    guard let capturePose = self.tracker.pose(at:stamp) else { self.images.removeValue(forKey:feed); return }
+                    self.images[feed] = CapturedImage(image:image,timestamp:stamp,yaw:capturePose.yaw,rotation:capturePose.rotation)
                 }
                 camera.onError = { [weak self] message in self?.stop(); self?.announce(message,force:true) }
                 cameras.append(camera); camera.start(device:devices[index])
@@ -263,7 +263,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         if route.id != outputRoute.id || route.channels < 2 {
             stop(); announce("Audio output changed. Restore AirPods output, then say Hey Seear, resume guidance.",force:true); return
         }
-        let poseOK = tracker.usable && abs(tracker.pitchOffset) < 12
+        let poseOK = tracker.usable
         if worker?.ready == true, worker?.busy == false, poseOK {
             if let image = images[nextFeed], now-image.timestamp < 0.4, let geometry = cameraGeometry[nextFeed] {
                 worker?.submit(image,feed:nextFeed,target:guidance.target,geometry:geometry)
@@ -272,11 +272,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         var state = guidance.evaluate(now:now,yaw:tracker.yaw,tracking:poseOK)
         if !visionOK { state = Guidance(target:nil,obstacle:nil,status:"Loading or waiting for local vision. Guidance paused.",fault:true) }
-        if tracker.usable && abs(tracker.pitchOffset) >= 12 {
-            state = Guidance(target:nil,obstacle:nil,status:"Head tilted. Return to the starting head pitch.",fault:true)
-        }
         updateItemPreview()
-        audio?.update(state,yaw:tracker.yaw); status.stringValue = state.status
+        audio?.update(state,pose:tracker.pose); status.stringValue = state.status
         if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? "Feet camera" : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
         else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw)) }
         else if !guidance.target.isEmpty && !state.fault {

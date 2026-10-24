@@ -47,7 +47,7 @@ def _foreground(rgb, depth, box, eligible):
     return result & supported
 
 
-def wearer_mask(image, depth, detections, feed, geometry):
+def wearer_mask(image, depth, detections, feed, geometry, tilt=None):
     """Suppress only RGB footwear/linked-leg pixels in a small estimated body volume.
 
     Category + geometry is a heuristic, not proof of ownership. Uncertain pixels
@@ -63,7 +63,7 @@ def wearer_mask(image, depth, detections, feed, geometry):
     if rgb.shape != (*depth.shape,3):
         raise ValueError("Wearer filter image/depth mismatch")
     h,w = depth.shape
-    x,forward,vertical = project(depth,geometry["hfov"],geometry["pitch"],geometry["height"])
+    x,forward,vertical = project(depth,geometry["hfov"],geometry["pitch"],geometry["height"],tilt)
     valid = np.isfinite(depth) & (depth > .05) & (depth < 30)
     shoe_volume = valid & (np.abs(x) < .38) & (forward > -.25) & (forward < .65) & (vertical > .025) & (vertical < .4)
     leg_volume = valid & (np.abs(x) < .35) & (forward > -.3) & (forward < .5) & (vertical > .025) & (vertical < min(.9,.6*geometry["height"]))

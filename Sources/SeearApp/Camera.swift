@@ -1,5 +1,6 @@
 import AVFoundation
 import AppKit
+import SeearCore
 
 struct CameraGeometry {
     var hfov = 70.0
@@ -66,4 +67,9 @@ struct CapturedImage {
     var image: CGImage
     var timestamp: Double
     var yaw: Double
+    var rotation: Rotation3D
+    init(image: CGImage, timestamp: Double, yaw: Double, rotation: Rotation3D? = nil) {
+        self.image = image; self.timestamp = timestamp; self.yaw = yaw; self.rotation = rotation ?? .heading(yaw)
+    }
+    var tilt: Rotation3D { rotation.followed(by:.heading(-yaw)) }
 }

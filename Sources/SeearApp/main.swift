@@ -15,9 +15,11 @@ func visionCheck() throws {
     let mapping = !CommandLine.arguments.contains("--no-mapping")
     var mapUpdates = 0
     var count = 0, finished = false, failure: String?, times: [Double] = [], frames: [String:Double] = [:], maxPairAge = 0.0
+    let smokeRotation = Rotation3D.axis(SIMD3(0,0,1),degrees:25)
+        .followed(by:.axis(SIMD3(1,0,0),degrees:20)).followed(by:.heading(30))
     func submit() {
         let captured = ProcessInfo.processInfo.systemUptime
-        worker.submit(CapturedImage(image:image,timestamp:captured,yaw:30),feed:count % 2 == 0 ? "front" : "feet",
+        worker.submit(CapturedImage(image:image,timestamp:captured,yaw:30,rotation:smokeRotation),feed:count % 2 == 0 ? "front" : "feet",
                       target:"cat",geometry:CameraGeometry(pitch:count % 2 == 0 ? 0 : 90))
     }
     worker.onStatus = { message, ok in
@@ -26,7 +28,7 @@ func visionCheck() throws {
     worker.onDiagnostic = { fputs($0,stderr) }
     worker.onScene = { frame in
         let now = ProcessInfo.processInfo.systemUptime
-        guard frame.objects.contains(where: { $0.label == "cat" }), frame.objects.allSatisfy(\.valid), frame.coverage > 0.99 else {
+        guard frame.objects.contains(where: { $0.label == "cat" }), frame.objects.allSatisfy(\.valid), frame.coverage > 0.99, let rotation = frame.rotation, rotation.difference(from:smokeRotation) < 0.001 else {
             failure = "Real model scene/box/depth validation failed"; finished = true; return
         }
         if frame.feed == "feet" {
@@ -61,15 +63,15 @@ func visionCheck() throws {
 }
 
 func audioCheck() throws {
-    func render(bearing: Double, yaw: Double, two: Bool = false, muted: Bool = false, hazard: Bool = true, long: Bool = false) throws -> ([Float],[Float]) {
+    func render(bearing: Double, yaw: Double, rotation: Rotation3D? = nil, elevation: Double = 0, two: Bool = false, muted: Bool = false, hazard: Bool = true, long: Bool = false) throws -> ([Float],[Float]) {
         let audio = SpatialAudio()
         try audio.start(offline:true)
         defer { audio.stop() }
-        let observation = Observation(label:"test",confidence:1,bearing:bearing,distance:1)
+        let observation = Observation(label:"test",confidence:1,bearing:bearing,elevation:elevation,distance:1)
         // Hazard has no FOV amplitude gate, making the rotated/static comparison exact.
         let cue = Cue(observation,yaw:0,hazard:true), item = Cue(observation,yaw:0)
         let state = Guidance(target:two || !hazard ? item : nil,obstacle:hazard || two ? cue : nil,status:"SYNTHETIC AUDIO CHECK",fault:false)
-        audio.update(state,yaw:yaw)
+        audio.update(state,pose:HeadPose(rotation:rotation ?? .heading(yaw),yaw:yaw))
         let buffer = AVAudioPCMBuffer(pcmFormat:audio.stereo,frameCapacity:4096)!
         var left: [Float] = [], right: [Float] = []
         for index in 0..<(long ? 40 : 14) {
@@ -99,6 +101,21 @@ func audioCheck() throws {
     let rotated = try render(bearing:60,yaw:90), expected = try render(bearing:-30,yaw:0)
     let difference = zip(rotated.0,expected.0).map { Double(($0-$1)*($0-$1)) }.reduce(0,+) / Double(rotated.0.count)
     try require(difference < 1e-8,"Head yaw rotates the perceived direction once with the correct sign")
+    for (pitch,roll) in [(35.0,40.0),(90.0,0.0),(-90.0,70.0),(130.0,180.0)] {
+        let attitude = Rotation3D.axis(SIMD3(0,0,1),degrees:roll)
+            .followed(by:.axis(SIMD3(1,0,0),degrees:pitch)).followed(by:.heading(55))
+        let source = SIMD3(sin(60 * Double.pi/180),tan(20 * Double.pi/180),-cos(60 * Double.pi/180))
+        let relative = attitude.inverse.applied(to:source)
+        let bearing = atan2(relative.x,-relative.z)*180 / .pi
+        let elevation = atan2(relative.y,hypot(relative.x,relative.z))*180 / .pi
+        for hazard in [true,false] {
+            let actual = try render(bearing:60,yaw:55,rotation:attitude,elevation:20,hazard:hazard)
+            // Rolloff is disabled, so only normalized direction matters to HRTF.
+            let expected = try render(bearing:bearing,yaw:0,elevation:elevation,hazard:hazard)
+            let error = zip(actual.0+actual.1,expected.0+expected.1).reduce(0.0) { $0+Double(($1.0-$1.1)*($1.0-$1.1)) } / Double(actual.0.count*2)
+            try require(error < 1e-8 && (actual.0+actual.1).allSatisfy(\.isFinite),"Full attitude \(hazard ? "hazard" : "item") HRTF agrees with head-relative source at pitch \(pitch)°, roll \(roll)°")
+        }
+    }
     let mix = try render(bearing:0,yaw:0,two:true)
     try require((mix.0+mix.1).allSatisfy { $0.isFinite && abs($0) < 1 },"Two simultaneous voices remain finite and unclipped")
     let item = try render(bearing:0,yaw:0,hazard:false,long:true)

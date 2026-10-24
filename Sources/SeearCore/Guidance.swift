@@ -72,10 +72,11 @@ public struct SceneFrame: Codable {
     public var obstacles: [Observation]
     public var coverage: Double
     public var inferenceMS: Double
+    public var rotation: Rotation3D?
     public var wearerFilter: WearerFilter?
     public init(feed: String, captured: Double, yaw: Double, target: String, objects: [Observation],
-                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0, wearerFilter: WearerFilter? = nil) {
-        self.feed = feed; self.captured = captured; self.yaw = yaw; self.target = target
+                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0, wearerFilter: WearerFilter? = nil, rotation: Rotation3D? = nil) {
+        self.feed = feed; self.captured = captured; self.yaw = yaw; self.target = target; self.rotation = rotation
         self.objects = objects; self.obstacles = obstacles; self.coverage = coverage; self.inferenceMS = inferenceMS; self.wearerFilter = wearerFilter
     }
 }
@@ -120,7 +121,7 @@ public final class GuidanceEngine {
         var distance: Double
         var confidence: Double
         var box: [Double]
-        var yaw: Double
+        var rotation: Rotation3D
         var captured: Double
     }
     private var lockedTarget: ItemLock?
@@ -133,7 +134,7 @@ public final class GuidanceEngine {
     public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); lockedTarget = nil; acquiredItem = false; selectedItem = nil }
     public func ingest(_ frame: SceneFrame) {
         guard ["front", "feet"].contains(frame.feed), frame.captured.isFinite, frame.yaw.isFinite,
-              frame.coverage.isFinite, (0...1).contains(frame.coverage),
+              frame.coverage.isFinite, (0...1).contains(frame.coverage), frame.rotation?.valid ?? true,
               frames[frame.feed].map({ $0.captured <= frame.captured }) ?? true else { return }
         frames[frame.feed] = frame
     }
@@ -181,7 +182,7 @@ public final class GuidanceEngine {
                 let angle = abs(Geometry.wrap(observation.bearing+frame.yaw-lock.bearing))
                 let range = abs(observation.distance-lock.distance), rangeGate = max(0.8,lock.distance*0.6)
                 guard angle < 20, range < rangeGate else { return nil }
-                let stableView = abs(Geometry.wrap(frame.yaw-lock.yaw)) < 5
+                let stableView = (frame.rotation ?? .heading(frame.yaw)).difference(from:lock.rotation) < 5
                 let iou = stableView ? overlap(lock.box,observation.box) : nil
                 if let iou, iou < 0.1 { return nil }
                 return (frame,observation,angle/20+range/rangeGate+(iou.map { 1-$0 } ?? 0))
@@ -206,7 +207,7 @@ public final class GuidanceEngine {
         // emitting an item cue or box below the floor.
         if let (frame,observation) = selected ?? associatedCurrent {
             lockedTarget = ItemLock(feed:frame.feed,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
-                                    confidence:observation.confidence,box:observation.box,yaw:frame.yaw,captured:frame.captured)
+                                    confidence:observation.confidence,box:observation.box,rotation:frame.rotation ?? .heading(frame.yaw),captured:frame.captured)
             acquiredItem = true
         }
         if let (frame,observation) = selected { selectedItem = (frame.feed,observation) }

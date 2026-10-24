@@ -15,12 +15,11 @@ from wearer import wearer_mask
 GEOMETRY=dict(hfov=70,pitch=70,height=1.6,scale=1)
 
 
-def fixture(forward_limits=(.15,.35), height=.18):
+def fixture(forward_limits=(.15,.35), height=.18, tilt=None):
     h,w=240,320
-    p=np.deg2rad(GEOMETRY["pitch"]); focal=w/(2*np.tan(np.deg2rad(35)))
-    v=np.indices((h,w))[0]
-    floor=GEOMETRY["height"]/(np.sin(p)+(v+.5-h/2)/focal*np.cos(p))
-    x,fwd,_=project(floor,70,70,1.6)
+    _,_,unit_height=project(np.ones((h,w)),70,70,1.6,tilt)
+    floor=1.6/(1.6-unit_height)
+    x,fwd,_=project(floor,70,70,1.6,tilt)
     shoe=(abs(x)<.12)&(fwd>forward_limits[0])&(fwd<forward_limits[1])
     depth=floor.copy(); depth[shoe]*=(1.6-height)/1.6
     rgb=np.full((h,w,3),185,np.uint8); rgb[shoe]=[25,60,140]
@@ -31,6 +30,19 @@ def fixture(forward_limits=(.15,.35), height=.18):
 
 
 class WearerTests(unittest.TestCase):
+    def test_footwear_volume_and_floor_follow_capture_tilt(self):
+        import cv2
+        for pitch,roll in [(-15,25), (-10,-30), (-20,30)]:
+            with self.subTest(pitch=pitch,roll=roll):
+                tilt = cv2.Rodrigues(np.array([np.deg2rad(pitch),0.,0.]))[0] @ cv2.Rodrigues(np.array([0.,0.,np.deg2rad(roll)]))[0]
+                image,depth,shoe,detection,_ = fixture(tilt=tilt)
+                mask,info = wearer_mask(image,depth,[detection],"feet",GEOMETRY,tilt)
+                self.assertGreater((mask&shoe).sum()/shoe.sum(),.95)
+                self.assertFalse((mask&~shoe).any())
+                _,hazards,coverage=scene_geometry(depth,[],excluded=mask,tilt=tilt,**GEOMETRY)
+                self.assertEqual(hazards,[])
+                self.assertEqual(coverage,1)
+
     def test_worn_shoe_is_rejected_but_depth_coverage_and_item_remain(self):
         image,depth,shoe,detection,_=fixture()
         _,before,_=scene_geometry(depth,[],**GEOMETRY)

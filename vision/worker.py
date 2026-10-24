@@ -33,7 +33,7 @@ def run(backend, mapping=False):
             from backend import DEPTH, SEGMENTATION, REVISIONS
             source = dict(kind="monocular_estimate",units="estimated_meters",model=DEPTH,
                           revision=REVISIONS[DEPTH],segmentation=SEGMENTATION,segmentationRevision=REVISIONS[SEGMENTATION],
-                          algorithm="depth-assisted-landmarks-floorplan-v1")
+                          algorithm="gravity-aligned-landmarks-floorplan-v2")
             service = MappingService(emit,source)
         except Exception as exc:
             emit(dict(type="map_error",message="Room memory unavailable: " + str(exc)))
@@ -56,13 +56,13 @@ def run(backend, mapping=False):
             if request["feed"] == "feet" and callable(getattr(backend,"infer_wearer",None)):
                 from wearer import wearer_mask
                 depth,detections,body = backend.infer_wearer(image,target)
-                excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"])
+                excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"],request.get("tilt"))
             else:
                 depth,detections = backend.infer(image,target)
-            objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,**request["geometry"])
+            objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,tilt=request.get("tilt"),**request["geometry"])
             scene = dict(feed=request["feed"], captured=request["captured"], yaw=request["yaw"], target=target,
                          objects=objects, obstacles=obstacles, coverage=coverage,
-                         inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info)
+                         inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info,rotation=request.get("rotation"))
             emit(dict(type="scene", scene=scene, id=request["id"]))
             if service is not None:
                 try:

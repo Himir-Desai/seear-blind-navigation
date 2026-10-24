@@ -65,6 +65,22 @@ def rendered_room(pose,width=320,height=240):
 
 
 class MappingTests(unittest.TestCase):
+    def test_initial_tilt_seeds_gravity_aligned_map_without_changing_mount_metadata(self):
+        tilt = cv2.Rodrigues(np.array([.4, 0., .5]))[0]
+        with tempfile.TemporaryDirectory() as root:
+            mapper = RoomMapper(root, SOURCE)
+            image = Image.fromarray(texture())
+            depth = np.full((480,640),3,np.float32)
+            seeded = mapper.update(image, depth, GEOMETRY, 10, tilt=tilt)
+            memory = mapper.maps[seeded["mapID"]]
+            np.testing.assert_allclose(np.asarray(memory.keyframes[0])[:3,:3], tilt @ initial_pose(GEOMETRY)[:3,:3])
+            self.assertEqual(memory.camera["mount"], GEOMETRY)
+            # Dynamic attitude must not be compared as fixed camera calibration.
+            mapper.update(image, depth, GEOMETRY, 10.2, tilt=tilt)
+            tracked = mapper.update(image, depth, GEOMETRY, 10.4, tilt=tilt)
+            self.assertEqual(tracked["status"], "tracking")
+            self.assertEqual(tracked["mapID"], seeded["mapID"])
+
     def test_pose_recovers_translation_and_rotation_with_outliers(self):
         memory,camera,origin = correspondence_fixture()
         pose=origin.copy(); pose[0,3]=.2

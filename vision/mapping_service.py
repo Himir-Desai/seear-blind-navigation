@@ -21,7 +21,7 @@ class MappingService:
         if self.disabled or self.stopping.is_set() or request["feed"] != "front":
             return
         task = (image.copy(), depth.copy(), dict(request["geometry"]), request["captured"],
-                [o["box"] for o in objects if o["box"]])
+                [o["box"] for o in objects if o["box"]], request.get("tilt"))
         try:
             self.mailbox.put_nowait(task)
         except queue.Full:
@@ -47,7 +47,7 @@ class MappingService:
                 except queue.Empty:
                     continue
                 semantic = segmentation.infer(task[0])
-                result = mapper.update(*task,semantic=semantic)
+                result = mapper.update(*task[:5],semantic=semantic,tilt=task[5])
                 if result is not None:
                     self.emit(dict(type="map",map=result))
         except Exception as exc:

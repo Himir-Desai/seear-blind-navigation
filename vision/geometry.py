@@ -3,18 +3,36 @@ import math
 import numpy as np
 
 
-def project(depth, hfov, pitch, height):
+def tilt_matrix(tilt=None):
+    if tilt is None:
+        return np.eye(3)
+    rotation = np.asarray(tilt, dtype=float)
+    if rotation.size != 9:
+        raise ValueError("Invalid capture tilt")
+    rotation = rotation.reshape(3, 3)
+    if (not np.isfinite(rotation).all() or
+            not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5) or
+            abs(np.linalg.det(rotation)-1) > 1e-5):
+        raise ValueError("Invalid capture tilt")
+    return rotation
+
+
+def project(depth, hfov, pitch, height, tilt=None):
     h, w = depth.shape
     if not (20 <= hfov <= 140 and -30 <= pitch <= 90 and 0.5 <= height <= 2.5):
         raise ValueError("Invalid camera geometry")
     focal = w / (2 * math.tan(math.radians(hfov / 2)))
-    v, u = np.indices((h, w))
-    x = (u + 0.5 - w / 2) / focal * depth
-    up = -(v + 0.5 - h / 2) / focal * depth
+    # Compose the mount and dynamic attitude before projecting. Broadcast 1-D
+    # ray coordinates rather than rotating several full-resolution point arrays.
+    # This keeps per-frame tilt compensation inside the live freshness budget.
+    horizontal = (np.arange(w)[None, :] + 0.5 - w / 2) / focal
+    down = (np.arange(h)[:, None] + 0.5 - h / 2) / focal
     p = math.radians(pitch)
-    forward = up * math.sin(p) + depth * math.cos(p)
-    vertical = height + up * math.cos(p) - depth * math.sin(p)
-    return x, forward, vertical
+    c, s = math.cos(p), math.sin(p)
+    r = tilt_matrix(tilt) @ np.array([[1,0,0],[0,-c,-s],[0,s,-c]])
+    return ((r[0,0]*horizontal + r[0,1]*down + r[0,2])*depth,
+            -(r[2,0]*horizontal + r[2,1]*down + r[2,2])*depth,
+            height + (r[1,0]*horizontal + r[1,1]*down + r[1,2])*depth)
 
 
 def observation(label, confidence, x, forward, vertical, height, box=None):
@@ -25,13 +43,13 @@ def observation(label, confidence, x, forward, vertical, height, box=None):
                 distance=horizontal, box=box or [])
 
 
-def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, excluded=None):
+def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, excluded=None, tilt=None):
     if not 0.1 <= scale <= 5:
         raise ValueError("Depth scale must be between 0.1 and 5")
     depth = np.asarray(depth, dtype=np.float32) * scale
     valid = np.isfinite(depth) & (depth > 0.05) & (depth < 30)
     coverage = float(valid.mean())
-    x, forward, vertical = project(depth, hfov, pitch, height)
+    x, forward, vertical = project(depth, hfov, pitch, height, tilt)
     h, w = depth.shape
     objects, obstacles = [], []
     for detection in detections:
