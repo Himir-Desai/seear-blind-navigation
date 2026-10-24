@@ -30,9 +30,15 @@ The monitored corridor follows **head direction**, not an inferred body travel d
 
 The item cue is a pulsed broadband/440 Hz sound, with faster pulses and stronger level when the estimated item is nearer. The obstacle cue is higher pitched and faster. Sounds indicate object locations, not a safe direction to walk. A close hazard suppresses the item sound; other in-path hazards duck it. Target loss stops its directional cue; Find again to select a different instance. Thin white canes may be missed and require specific real-scene evaluation.
 
+## Room memory and floorplan
+
+Backend setup enables **Build room memory** by default. The front camera automatically builds and saves landmarks, an estimated camera path, observed floor cells and partial wall segments. **Room map (debug)** displays them and saved-place recognition; lost/stale poses disappear. Unseen areas stay unknown. Live guidance works without a map or scan.
+
+See [room mapping](docs/ROOM_MAPPING.md) for reuse, limits, local storage and model licensing. This is experimental RGB geometry, with no complete-floorplan or survey-accuracy claim. Optional phone LiDAR scans are a future extension and will require alignment to the live camera map.
+
 ## Implementation and evidence
 
-The app uses AppKit, AVFoundation HRTFHQ, CoreMotion and on-device Speech. A private Python worker runs OWLv2 text-conditioned detection and Depth Anything V2 Metric Indoor Small on MPS when available, otherwise CPU. No frames/audio are sent to an inference service. Capture, inference, geometry, guidance and audio are separate modules for future backend replacement.
+The app uses AppKit, AVFoundation HRTFHQ, CoreMotion and on-device Speech. A private Python worker runs OWLv2 text-conditioned detection and Depth Anything V2 Metric Indoor Small on MPS when available, otherwise CPU. Optional room memory uses OpenCV landmarks and a cached SegFormer wall/floor model in a background thread. No frames/audio are sent to an inference service. Capture, inference, geometry, guidance and audio are separate modules for future backend replacement.
 
 [Prototype findings](docs/PROTOTYPE_FINDINGS.md) explains why the item cue starts from Hybrid 2.1 and why hazard alerts use a different policy. The latest small P4 comparison favored Hybrid's first-press error but found slower searches; no perceptual or safety superiority is established. [Architecture](docs/ARCHITECTURE.md) records coordinates, state, deadlines and limitations.
 

@@ -19,7 +19,7 @@ Initial Demo 1 baseline, before B3:
 
 Run `bash verify.sh` for the signed release build, Swift core tests, Python geometry/protocol tests, real offline HRTF rendering and signature validation.
 
-The ML smoke check is separate because it loads both models and requires an example image. It uses the public two-cat image linked from the Hugging Face documentation dataset, not user camera footage. Save the sample locally once:
+The ML smoke check is separate because it loads the cached models and requires an example image. It uses the public two-cat image linked from the Hugging Face documentation dataset, not user camera footage. Save the sample locally once:
 
 ```bash
 mkdir -p build
@@ -45,7 +45,7 @@ Before any supervised walking test:
 - Measure camera FOV, mounting angles and cap height; estimate a depth scale from several known ranges. Confirm floor exclusion and alert positions while standing still. Check left/right/front cues on AirPods and normal stereo output with voice enabled.
 - Find the actual backpack and white cane in varied indoor lighting, against clutter, with partial occlusions and multiple similar objects. Measure missed detections, false detections, direction errors, range errors and target loss. Category detection does not prove ownership.
 - Check obstacle alerts while finding an item. Confirm urgent hazards suppress the item, off-path objects do not dominate, and camera disconnection, head-tracking loss, tilted head and slow inference announce a pause. Turn through 90°/180° without any reset and verify that the alert corridor follows the camera. Confirm spoken pause/resume works without touching the Mac and that resume waits for new frames.
-- Test slow supervised movement and turns with an existing mobility aid. Looking sideways can leave the actual travel path outside the cap cameras; the software does not estimate body travel direction. No manual direction reset is required. Assess latency while moving; this implementation has no translation tracking, drop-off detection, route planning or validated stopping distance.
+- Test slow supervised movement and turns with an existing mobility aid. Looking sideways can leave the actual travel path outside the cap cameras; the software does not estimate body travel direction. No manual direction reset is required. Assess latency while moving; audio does not use the experimental map translation, and there is no drop-off detection, route planning or validated stopping distance.
 
 No real-world walking reliability, white-cane detection accuracy, personal-item recognition, listening comfort or blind-participant validation is claimed by the automated tests.
 
@@ -61,3 +61,28 @@ B3 validation completed:
 - Shell syntax and whitespace checks passed. Model code and the scene pipe contract were unchanged; the real-model benchmark above remains the initial baseline and was not rerun for this correction.
 
 Voice tests exercise command parsing and guidance state, not physical speech recognition. Actual microphone reach, on-device recognition availability, AirPods left/right alignment and cap-camera turn behavior require supervised hardware acceptance. No such acceptance is claimed.
+
+## Feature 2: room memory and partial wall/floorplan reconstruction
+
+Validation completed on the same host:
+
+- Signed release build, 20 Swift tests, 17 Python tests and all 6 actual HRTF checks passed. New tests cover 6-DoF pose recovery with outliers, weak/depth-inconsistent match rejection, real ORB save/reload/relocalization, tracking loss without map extension, calibration mismatch, unknown/dynamic surfaces, synthetic wall/floor geometry, persisted floorplans, corrupt/unsupported files, atomic write failures, revision conflicts and mapping/live-scene isolation.
+- The geometry fixture raycasts a known rectangular room and checks reconstructed wall endpoints against its planes. Repeated distinct views support wall estimates, a stationary repeated view does not increase wall support, and the unseen rear boundary is not invented. This tests the geometry algorithm with known labels/depth; it does not measure model accuracy.
+- The actual cached SegFormer CPU model, OWLv2/Depth Anything MPS models and native map/scene decoders ran together over eight alternating public sample-image frames. The final isolated mapping-enabled run averaged **436 ms/frame**, with maximum oldest-feed age **1.362 s**, below the unchanged **1.5 s** deadline. The no-mapping comparison averaged 442 ms and 1.343 s. An earlier run overlapping UI work failed at 1.975 s; another isolated run passed at 1.432 s. Timing remains load-dependent, and stale live results still pause guidance.
+- Native screenshots and accessibility inspection verified the backend mapping checkbox/button and the separate labelled synthetic floorplan window. The stale camera marker was suppressed and unknown regions remained blank. UI preview requested no camera/microphone/motion feeds. Two USB devices were listed during this inspection, but their cap mounting, geometry and live performance were not tested.
+- `pip check`, shell syntax and Git whitespace checks passed. Map smoke files live under ignored unique `build/mapping-smoke-*` folders, never the wearer's map directory. The synthetic UI fixture is explicitly labelled; it is not evidence of a physical room scan.
+
+Run the map UI check separately from the ML timing check:
+
+```bash
+.venv/bin/python scripts/mapping-ui-fixture.py
+open -n build/Seear.app --args --ui-map-smoke
+# After UI checks finish:
+build/Seear.app/Contents/MacOS/SeearDemo --vision-check
+# Optional live-vision comparison:
+build/Seear.app/Contents/MacOS/SeearDemo --vision-check --no-mapping
+```
+
+The final Python checks have no matrix warnings after replacing the tiny batched BLAS operations with equivalent explicit contractions (finite-input/output comparison agreed exactly on this host). Cached SegFormer emits an ignored `reduce_labels` processor-configuration warning; inference returns native map messages successfully. The existing LibreSSL warning also remains.
+
+Physical acceptance must now additionally measure path drift and range/scale error, wall displacement and missed/false wall segments, saved-place recovery after restart and lighting/viewpoint changes, repeated-room ambiguity, head turns/tilts, furniture movement and map loss/recovery while live alerts continue. No physical floorplan accuracy, full-room completeness, route safety or blind-participant validation is claimed. See [room mapping](ROOM_MAPPING.md) for limits and the optional future phone registration design.

@@ -4,6 +4,9 @@ import SeearCore
 
 final class AppController: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
+    private var mapWindow: NSWindow?
+    private let mapView = RoomMapView()
+    private let mapEnabled = NSButton(checkboxWithTitle:"Build room memory",target:nil,action:nil)
     private let guidance = GuidanceEngine(), tracker = HeadTracker(), voice = VoiceInput()
     private let speaker = AVSpeechSynthesizer()
     private var audio: SpatialAudio?, worker: VisionWorker?
@@ -29,9 +32,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildUI()
-        if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-preview") {
+        if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-preview") || CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-map-preview") {
             status.stringValue = "UI verification · synthetic preview"
-            if CommandLine.arguments.contains("--ui-smoke") {
+            if CommandLine.arguments.contains("--ui-map-smoke") || CommandLine.arguments.contains("--ui-map-preview") {
+                if let data = try? Data(contentsOf:root.appendingPathComponent("build/map-ui-fixture.json")),
+                   let fixture = try? JSONDecoder().decode(RoomMapSnapshot.self,from:data), fixture.valid {
+                    mapView.snapshot = fixture
+                } else { mapView.error = "Missing synthetic mapping UI fixture" }
+                showRoomMap()
+            }
+            if CommandLine.arguments.contains("--ui-smoke") || CommandLine.arguments.contains("--ui-map-smoke") {
                 DispatchQueue.main.asyncAfter(deadline: .now()+0.6) { self.captureUI(); NSApp.terminate(nil) }
             }
             return
@@ -85,7 +95,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         stack.addArrangedSubview(tracking)
         startButton.target = self; startButton.action = #selector(toggle); startButton.bezelStyle = .rounded
-        stack.addArrangedSubview(row([startButton,button("Retry voice",#selector(enableVoice)),button("Disable voice (debug)",#selector(disableVoice))]))
+        mapEnabled.state = .on; settings.append(mapEnabled)
+        stack.addArrangedSubview(row([startButton,button("Retry voice",#selector(enableVoice)),button("Disable voice (debug)",#selector(disableVoice)),mapEnabled,button("Room map (debug)",#selector(showRoomMap))]))
         target.widthAnchor.constraint(equalToConstant:240).isActive = true; target.setAccessibilityLabel("Item to find")
         stack.addArrangedSubview(row([text("Find an item"),target,button("Find",#selector(find)),button("Cancel search",#selector(cancelSearch))]))
         stack.addArrangedSubview(text("Voice starts with the backend. Say “Hey Seear, where is my backpack”, “pause guidance”, or “resume guidance”. “Hey Seear, stop” cancels search. Forward follows the cap as you turn.",size:13))
@@ -105,6 +116,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         if devices.count > 1 { feetSelect.selectItem(at:1) }
     }
     @objc private func refreshCameras() { refreshDevices() }
+    @objc private func showRoomMap() {
+        if mapWindow == nil {
+            let window = NSWindow(contentRect:NSRect(x:0,y:0,width:900,height:650),styleMask:[.titled,.closable,.resizable,.miniaturizable],backing:.buffered,defer:false)
+            window.title = "Seear · Room memory (debug)"; window.minSize = NSSize(width:780,height:560)
+            window.isReleasedWhenClosed = false; window.contentView = mapView; window.center(); mapWindow = window
+        }
+        mapWindow?.makeKeyAndOrderFront(nil)
+    }
     @objc private func enableVoice() { voice.start() }
     @objc private func disableVoice() { voice.stop() }
     @objc private func find() { command(.find(target.stringValue)) }
@@ -157,6 +176,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             guidance.resume(); images.removeAll(); visionOK = false; started = ProcessInfo.processInfo.systemUptime
             running = true; previouslyFaulted = true; startButton.title = "Stop backend"; settings.forEach { $0.isEnabled = false }
             let worker = VisionWorker(); self.worker = worker
+            mapView.snapshot = nil
+            mapView.error = mapEnabled.state == .on ? nil : "Room memory disabled. Live alerts continue without a map."
+            worker.onMap = { [weak self] snapshot in self?.mapView.snapshot = snapshot }
+            worker.onMapError = { [weak self] message in self?.mapView.error = message }
             worker.onScene = { [weak self] frame in
                 guard let self, self.running, frame.captured >= self.tracker.referenceStarted else { return }
                 self.guidance.ingest(frame)
@@ -169,7 +192,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             worker.onDiagnostic = { [weak self] message in self?.logDiagnostic(message) }
             visionStatus.stringValue = "Loading local models…"
-            try worker.start(root:root)
+            try worker.start(root:root,mapping:mapEnabled.state == .on)
             for (feed,index) in [("front",frontSelect.indexOfSelectedItem),("feet",feetSelect.indexOfSelectedItem)] {
                 let camera = Camera()
                 camera.onFrame = { [weak self] image, stamp in
@@ -245,9 +268,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { if self.running { self.stop(); self.announce("Camera disconnected. Guidance stopped.",force:true) } }
     }
     private func captureUI() {
-        guard let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in:view.bounds) else { return }
+        let mapping = CommandLine.arguments.contains("--ui-map-smoke")
+        guard let view = mapping ? mapWindow?.contentView : window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in:view.bounds) else { return }
         view.cacheDisplay(in:view.bounds,to:rep)
-        if let data = rep.representation(using:.png,properties:[:]) { try? data.write(to:root.appendingPathComponent("build/ui-smoke.png")) }
+        if let data = rep.representation(using:.png,properties:[:]) { try? data.write(to:root.appendingPathComponent(mapping ? "build/map-ui-smoke.png" : "build/ui-smoke.png")) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) { stop(); timer?.invalidate(); tracker.stop(); voice.stop() }
