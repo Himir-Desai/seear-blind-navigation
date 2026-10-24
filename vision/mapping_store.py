@@ -67,7 +67,7 @@ class LandmarkMap:
         if source.get("kind") != "monocular_estimate" or source.get("units") != "estimated_meters":
             raise ValueError("This mapper only localizes its estimated RGB maps; phone scans need a registration adapter")
         mount = camera["mount"]
-        for key, low, high in [("hfov",20,140),("pitch",-30,85),("height",.5,2.5),("scale",.1,5)]:
+        for key, low, high in [("hfov",20,140),("pitch",-30,90),("height",.5,2.5),("scale",.1,5)]:
             if not isinstance(mount[key], (int,float)) or not low <= mount[key] <= high:
                 raise ValueError("Invalid saved camera geometry")
         size = camera["imageSize"]

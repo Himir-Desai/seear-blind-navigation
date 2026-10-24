@@ -18,7 +18,7 @@ func visionCheck() throws {
     func submit() {
         let captured = ProcessInfo.processInfo.systemUptime
         worker.submit(CapturedImage(image:image,timestamp:captured,yaw:30),feed:count % 2 == 0 ? "front" : "feet",
-                      target:"cat",geometry:CameraGeometry())
+                      target:"cat",geometry:CameraGeometry(pitch:count % 2 == 0 ? 0 : 90))
     }
     worker.onStatus = { message, ok in
         if ok { print(message); submit() } else { failure = message; finished = true }
@@ -28,6 +28,12 @@ func visionCheck() throws {
         let now = ProcessInfo.processInfo.systemUptime
         guard frame.objects.contains(where: { $0.label == "cat" }), frame.objects.allSatisfy(\.valid), frame.coverage > 0.99 else {
             failure = "Real model scene/box/depth validation failed"; finished = true; return
+        }
+        if frame.feed == "feet" {
+            guard let filter = frame.wearerFilter, filter.valid else {
+                failure = "Footwear filter did not run on the actual feet path"; finished = true; return
+            }
+            print("PASS footwear filter protocol: \(filter.status)")
         }
         // Measure the oldest scene just BEFORE replacement as well as after it;
         // reporting only post-reply ages hides the end-of-cycle worst case.
