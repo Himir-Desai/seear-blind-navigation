@@ -202,7 +202,7 @@ final class GuidanceTests: XCTestCase {
         XCTAssertFalse(orientation.isFresh(at:10))
         orientation.ingest(rawYaw:-137,pitch:5,at:10)
         XCTAssertTrue(orientation.isFresh(at:10.01))
-        XCTAssertEqual(orientation.yaw,0)
+        XCTAssertEqual(orientation.yaw,0,accuracy:1e-8)
         orientation.ingest(rawYaw:133,pitch:5,at:10.1) // Right turn 90°, wrapping raw yaw.
         XCTAssertEqual(orientation.yaw,90,accuracy:1e-8)
         orientation.ingest(rawYaw:43,pitch:5,at:10.2)
@@ -220,7 +220,7 @@ final class GuidanceTests: XCTestCase {
         orientation.ingest(rawYaw:42,pitch:8,at:11)
         XCTAssertEqual(orientation.generation,2)
         XCTAssertEqual(orientation.referenceStarted,11)
-        XCTAssertEqual(orientation.yaw,0); XCTAssertEqual(orientation.pitchOffset,0)
+        XCTAssertEqual(orientation.yaw,0,accuracy:1e-8)
         XCTAssertNil(orientation.yaw(at:10))
         orientation.ingest(rawYaw:10,pitch:5,at:9) // Reject out-of-order motion.
         XCTAssertEqual(orientation.referenceStarted,11)

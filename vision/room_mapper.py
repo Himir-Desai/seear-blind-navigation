@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from mapping_store import LandmarkMap, MapStore, MAX_POINTS, MAX_TRAJECTORY, utc
 from floorplan import integrate_floorplan
+from geometry import tilt_matrix
 
 
 def intrinsics(width, height, hfov):
@@ -17,12 +18,13 @@ def intrinsics(width, height, hfov):
     return np.array([[focal, 0, width / 2 - .5], [0, focal, height / 2 - .5], [0, 0, 1]], np.float64)
 
 
-def initial_pose(geometry):
+def initial_pose(geometry, tilt=None):
     pitch = math.radians(geometry["pitch"])
     c, s = math.cos(pitch), math.sin(pitch)
     pose = np.eye(4)
     # Optical camera +X right/+Y down/+Z forward -> map +X right/+Y up/-Z forward.
     pose[:3, :3] = [[1, 0, 0], [0, -c, -s], [0, s, -c]]
+    pose[:3, :3] = tilt_matrix(tilt) @ pose[:3, :3]
     pose[1, 3] = geometry["height"]
     return pose
 
@@ -143,12 +145,12 @@ class RoomMapper:
         memory.descriptors = np.concatenate([memory.descriptors, descriptors[candidates]])
         memory.seen = np.concatenate([memory.seen, np.ones(len(candidates),np.uint16)])
 
-    def _seed(self, pixels, descriptors, depths, camera, geometry, size):
+    def _seed(self, pixels, descriptors, depths, camera, geometry, size, tilt=None):
         self.maps = {k:m for k,m in self.maps.items() if m.revision > 0}
         if len(self.maps) >= 32:
             del self.maps[min(self.maps,key=lambda k:self.maps[k].created)] # Unload only; preserve its file.
         memory = LandmarkMap(camera=dict(imageSize=list(size), mount=dict(geometry)), source=self.source)
-        pose = initial_pose(geometry)
+        pose = initial_pose(geometry, tilt)
         self._add_points(memory, pixels, descriptors, depths, camera, pose)
         memory.keyframes.append(pose.tolist())
         self.maps[memory.id] = memory
@@ -173,7 +175,7 @@ class RoomMapper:
             walls=[dict(start=w["start"],end=w["end"],observations=w["observations"]) for w in memory.floorplan["walls"]] if memory else [],
             detail=self.persistence_error or detail or ("Some saved maps could not be loaded" if self.warnings else "Sparse estimated geometry; live alerts remain independent"))
 
-    def update(self, image, depth, geometry, captured, boxes=(), semantic=None):
+    def update(self, image, depth, geometry, captured, boxes=(), semantic=None, tilt=None):
         if captured <= self.last_time:
             return None
         self.last_time = captured
@@ -197,7 +199,7 @@ class RoomMapper:
         if not candidates:
             self._lost(); self.failures += 1
             if self.failures >= 3 or not self.maps:
-                self._seed(pixels, descriptors, depths, camera, geometry, image.size)
+                self._seed(pixels, descriptors, depths, camera, geometry, image.size, tilt)
                 return self.snapshot("initializing",captured,detail="Building a new local map; geometry is provisional")
             return self.snapshot("relocalizing",captured,detail="Looking for a saved place; no map pose accepted")
         identity, result = candidates[0]

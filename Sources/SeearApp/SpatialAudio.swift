@@ -64,7 +64,7 @@ final class SpatialAudio {
         environment.renderingAlgorithm = .HRTFHQ
         environment.reverbParameters.enable = false
         if #available(macOS 15.0, *) {
-            environment.isListenerHeadTrackingEnabled = false // AirPods yaw is applied exactly once.
+            environment.isListenerHeadTrackingEnabled = false // Full AirPods attitude is applied exactly once.
         }
         environment.distanceAttenuationParameters.rolloffFactor = 0 // Explicit P4 distance mapping.
         for i in voices.indices {
@@ -85,14 +85,23 @@ final class SpatialAudio {
         }) else { engine.stop(); throw NSError(domain: "HRTFHQ unavailable", code: 1) }
     }
     func update(_ guidance: Guidance, yaw: Double) {
-        environment.listenerAngularOrientation = AVAudio3DAngularOrientation(yaw: Float(Geometry.wrap(yaw)), pitch: 0, roll: 0)
+        update(guidance,pose:HeadPose(rotation:.heading(yaw),yaw:yaw))
+    }
+    func update(_ guidance: Guidance, pose: HeadPose) {
+        let forward = pose.rotation.applied(to:SIMD3(0,0,-1)), up = pose.rotation.applied(to:SIMD3(0,1,0))
+        environment.listenerVectorOrientation = AVAudio3DVectorOrientation(
+            forward:AVAudio3DVector(x:Float(forward.x),y:Float(forward.y),z:Float(forward.z)),
+            up:AVAudio3DVector(x:Float(up.x),y:Float(up.y),z:Float(up.z)))
         for (i, cue) in [guidance.target, guidance.obstacle].enumerated() {
+            var relativeAngle = 0.0
             if let cue {
                 let a = cue.bearing * .pi / 180
-                mixers[i].position = AVAudio3DPoint(x: Float(sin(a) * cue.distance),
-                    y: Float(tan(cue.elevation * .pi / 180) * cue.distance), z: Float(-cos(a) * cue.distance))
+                let position = SIMD3(sin(a)*cue.distance,tan(cue.elevation * .pi/180)*cue.distance,-cos(a)*cue.distance)
+                mixers[i].position = AVAudio3DPoint(x:Float(position.x),y:Float(position.y),z:Float(position.z))
+                let local = pose.rotation.inverse.applied(to:position)
+                relativeAngle = atan2(local.x,-local.z)*180 / .pi
             }
-            voices[i].update(cue: cue, relativeAngle: cue.map { Geometry.relative($0.bearing, yaw: yaw) } ?? 0)
+            voices[i].update(cue:cue,relativeAngle:relativeAngle)
         }
     }
     func mute() { for v in voices { v.update(cue: nil, relativeAngle: 0) } }
