@@ -52,11 +52,17 @@ def run(backend, mapping=False):
             image = Image.open(io.BytesIO(base64.b64decode(request["jpeg"], validate=True))).convert("RGB")
             if image.width > 1280 or image.height > 1280:
                 raise ValueError("Frame dimensions exceed protocol limit")
-            depth, detections = backend.infer(image, target)
-            objects, obstacles, coverage = scene_geometry(depth, detections, **request["geometry"])
+            excluded,filter_info = None,None
+            if request["feed"] == "feet" and callable(getattr(backend,"infer_wearer",None)):
+                from wearer import wearer_mask
+                depth,detections,body = backend.infer_wearer(image,target)
+                excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"])
+            else:
+                depth,detections = backend.infer(image,target)
+            objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,**request["geometry"])
             scene = dict(feed=request["feed"], captured=request["captured"], yaw=request["yaw"], target=target,
                          objects=objects, obstacles=obstacles, coverage=coverage,
-                         inferenceMS=(time.monotonic() - start) * 1000)
+                         inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info)
             emit(dict(type="scene", scene=scene, id=request["id"]))
             if service is not None:
                 try:

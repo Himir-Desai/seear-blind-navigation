@@ -5,7 +5,7 @@ import numpy as np
 
 def project(depth, hfov, pitch, height):
     h, w = depth.shape
-    if not (20 <= hfov <= 140 and -30 <= pitch <= 85 and 0.5 <= height <= 2.5):
+    if not (20 <= hfov <= 140 and -30 <= pitch <= 90 and 0.5 <= height <= 2.5):
         raise ValueError("Invalid camera geometry")
     focal = w / (2 * math.tan(math.radians(hfov / 2)))
     v, u = np.indices((h, w))
@@ -25,7 +25,7 @@ def observation(label, confidence, x, forward, vertical, height, box=None):
                 distance=horizontal, box=box or [])
 
 
-def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1):
+def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, excluded=None):
     if not 0.1 <= scale <= 5:
         raise ValueError("Depth scale must be between 0.1 and 5")
     depth = np.asarray(depth, dtype=np.float32) * scale
@@ -52,6 +52,11 @@ def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1):
     # Exclude estimated floor and points above head height. RGB errors can still create
     # false positives/negatives; this is not a drop-off or walkable-space detector.
     occupied = valid & (vertical > .12) & (vertical < 2.2) & (forward > .1) & (forward < 4)
+    if excluded is not None:
+        excluded = np.asarray(excluded)
+        if excluded.shape != occupied.shape or excluded.dtype != bool:
+            raise ValueError("Invalid wearer exclusion mask")
+        occupied &= ~excluded
     for row in range(6):
         for col in range(12):
             ys = slice(row * h // 6, (row + 1) * h // 6)

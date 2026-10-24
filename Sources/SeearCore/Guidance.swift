@@ -52,6 +52,17 @@ public struct Observation: Codable, Equatable {
     }
 }
 
+public struct WearerFilter: Codable {
+    public var status: String
+    public var excludedPixels: Int
+    public var shoes: Int
+    public var legs: Int
+    public var valid: Bool {
+        ["filtered","no_match","not_applicable","mask_rejected"].contains(status) &&
+        (0...1_638_400).contains(excludedPixels) && (0...8).contains(shoes) && (0...8).contains(legs)
+    }
+}
+
 public struct SceneFrame: Codable {
     public var feed: String
     public var captured: Double
@@ -61,10 +72,11 @@ public struct SceneFrame: Codable {
     public var obstacles: [Observation]
     public var coverage: Double
     public var inferenceMS: Double
+    public var wearerFilter: WearerFilter?
     public init(feed: String, captured: Double, yaw: Double, target: String, objects: [Observation],
-                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0) {
+                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0, wearerFilter: WearerFilter? = nil) {
         self.feed = feed; self.captured = captured; self.yaw = yaw; self.target = target
-        self.objects = objects; self.obstacles = obstacles; self.coverage = coverage; self.inferenceMS = inferenceMS
+        self.objects = objects; self.obstacles = obstacles; self.coverage = coverage; self.inferenceMS = inferenceMS; self.wearerFilter = wearerFilter
     }
 }
 
@@ -74,9 +86,10 @@ public struct Cue: Equatable {
     public var distance: Double
     public var level: Double
     public var hazard: Bool
-    public init(_ o: Observation, yaw: Double, level: Double = 1, hazard: Bool = false) {
+    public var feed: String?
+    public init(_ o: Observation, yaw: Double, level: Double = 1, hazard: Bool = false, feed: String? = nil) {
         bearing = Geometry.wrap(o.bearing + yaw); elevation = o.elevation; distance = o.distance
-        self.level = level; self.hazard = hazard
+        self.level = level; self.hazard = hazard; self.feed = feed
     }
 }
 
@@ -150,7 +163,7 @@ public final class GuidanceEngine {
         if let (f, o) = selected { lockedTarget = (f.feed, Geometry.wrap(o.bearing + f.yaw), o.distance) }
         let urgent = hazard.map { $0.1.distance <= 1.2 } ?? false
         return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: hazard == nil ? 1 : 0.2) },
-                        obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true) },
+                        obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true, feed: $0.0.feed) },
                         status: hazard != nil ? "Obstacle in forward view" : target.isEmpty ? "Monitoring forward view" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
     }
 }

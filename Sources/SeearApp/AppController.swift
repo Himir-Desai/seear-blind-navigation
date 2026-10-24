@@ -84,7 +84,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         frontPreview.setAccessibilityLabel("Front camera preview"); feetPreview.setAccessibilityLabel("Feet camera preview")
         stack.addArrangedSubview(text("Camera geometry — enter measured FOV, downward mount angle, cap height and depth scale before starting",size:13,weight:.semibold))
         for (i, name) in ["Front", "Feet"].enumerated() {
-            let defaults = [70.0, i == 0 ? 0.0 : 55.0, 1.6, 1.0]
+            let defaults = [70.0, i == 0 ? 0.0 : 90.0, 1.6, 1.0]
             let labels = ["FOV °", "Down °", "Height m", "Scale"]
             var views: [NSView] = [text(name)]
             let fields = zip(defaults,labels).map { value, label -> NSTextField in
@@ -153,7 +153,7 @@ final class AppController: NSObject, NSApplicationDelegate {
               frontSelect.indexOfSelectedItem != feetSelect.indexOfSelectedItem else { announce("Choose two different connected cameras",force:true); return }
         for (i,feed) in ["front","feet"].enumerated() {
             let v = geometryFields[i].map { Double($0.stringValue) ?? .nan }
-            guard v.allSatisfy(\.isFinite), (20...140).contains(v[0]), (-30...85).contains(v[1]), (0.5...2.5).contains(v[2]), (0.1...5).contains(v[3]) else {
+            guard v.allSatisfy(\.isFinite), (20...140).contains(v[0]), (-30...90).contains(v[1]), (0.5...2.5).contains(v[2]), (0.1...5).contains(v[3]) else {
                 announce("Check camera geometry values",force:true); return
             }
             cameraGeometry[feed] = CameraGeometry(hfov:v[0],pitch:v[1],height:v[2],scale:v[3])
@@ -183,6 +183,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             worker.onScene = { [weak self] frame in
                 guard let self, self.running, frame.captured >= self.tracker.referenceStarted else { return }
                 self.guidance.ingest(frame)
+                if frame.feed == "feet", let filter = frame.wearerFilter, filter.valid {
+                    self.visionStatus.stringValue = "Local vision · feet: \(filter.shoes) shoe candidates, \(filter.excludedPixels) pixels excluded"
+                }
                 (frame.feed == "front" ? self.frontPreview : self.feetPreview).observations = frame.objects
                 self.visionOK = true
             }
@@ -244,7 +247,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             state = Guidance(target:nil,obstacle:nil,status:"Head tilted. Return to the starting head pitch.",fault:true)
         }
         audio?.update(state,yaw:tracker.yaw); status.stringValue = state.status
-        if let obstacle = state.obstacle { detail.stringValue = String(format:"Obstacle ~%.1f m · %.0f° relative to head",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
+        if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? "Feet camera" : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
         else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw)) }
         else { detail.stringValue = "No current directional cue" }
         if state.fault && now-started > 4 { announce(state.status) }

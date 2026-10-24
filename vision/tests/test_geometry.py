@@ -23,13 +23,26 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(hazards)
 
     def test_flat_floor_is_excluded_for_down_camera(self):
-        # Analytic depth of a flat floor with camera pitched down by 55 degrees.
-        h, w, height, p = 120, 160, 1.6, np.deg2rad(55)
+        # Includes a straight-down cap camera at the user's 5–6 ft mount heights.
+        h, w = 120, 160
         focal = w / (2 * np.tan(np.deg2rad(35)))
         v = np.indices((h, w))[0]
-        depth = height / (np.sin(p) + (v + .5 - h / 2) / focal * np.cos(p))
-        _, hazards, _ = scene_geometry(depth, [], pitch=55, height=height)
-        self.assertEqual(hazards, [])
+        for height in (1.524,1.6,1.829):
+            for pitch in (55,70,90):
+                with self.subTest(height=height,pitch=pitch):
+                    p=np.deg2rad(pitch)
+                    depth=height/(np.sin(p)+(v+.5-h/2)/focal*np.cos(p))
+                    _,hazards,_=scene_geometry(depth,[],pitch=pitch,height=height)
+                    self.assertEqual(hazards,[])
+
+    def test_straight_down_camera_keeps_horizontal_and_camera_ranges_distinct(self):
+        depth=np.full((240,320),1.44,np.float32)
+        objects,_,_=scene_geometry(depth,[dict(label="shoe",confidence=.9,box=[.47,.31,.53,.39])],pitch=90)
+        self.assertEqual(len(objects),1)
+        # The camera is 1.6 m high; a 16 cm-high shoe is ~1.45 m from the camera,
+        # while its horizontal ground range can still be ~0.2 m.
+        self.assertAlmostEqual(objects[0]["distance"],.227,delta=.015)
+        self.assertLess(objects[0]["elevation"],-75)
 
     def test_invalid_depth_is_unavailable_not_empty_clear_scene(self):
         with np.errstate(invalid="ignore"):

@@ -18,7 +18,7 @@ During backend setup, grant Camera, Motion & Fitness, Microphone and Speech Reco
 
 The Mac interface is for the developer or sighted supervisor to configure and debug the backend. Once the backend is running, the wearer controls it by voice and does not need to use the Mac.
 
-1. **Backend setup:** connect both USB cameras and select front/feet devices. Enter their measured FOV, mount angles, cap height and depth scale. Defaults are placeholders; RGB estimates remain uncertain.
+1. **Backend setup:** connect both USB cameras and select front/feet devices. Enter their measured FOV, mount angles, cap height and depth scale. The feet angle defaults to 90° for a straight-down camera; use its actual mounting angle if tilted. Defaults are placeholders; RGB estimates remain uncertain.
 2. Select stereo AirPods output and a microphone that can hear the wearer at the intended demo distance. A Mac microphone works only within its usable range. Check that voice input preserves stereo headphone output.
 3. With the cap and AirPods worn at the normal head pitch, start the backend. AirPods motion gets an arbitrary reference automatically, and local voice listening starts automatically. Confirm the left/right cue alignment during setup. No face-forward/right-turn button calibration is required.
 4. Wait for the spoken “Guidance active” message. Both cameras and head tracking must supply fresh data before directional cues play.
@@ -29,6 +29,8 @@ The Mac interface is for the developer or sighted supervisor to configure and de
 The monitored corridor follows **head direction**, not an inferred body travel direction. Looking sideways while continuing to walk can leave the travel path outside the camera view. This version does not claim to monitor unseen hazards or infer walking intent. Supervised turn testing is still required.
 
 The item cue is a pulsed broadband/440 Hz sound, with faster pulses and stronger level when the estimated item is nearer. The obstacle cue is higher pitched and faster. Sounds indicate object locations, not a safe direction to walk. A close hazard suppresses the item sound; other in-path hazards duck it. Target loss stops its directional cue; Find again to select a different instance. Thin white canes may be missed and require specific real-scene evaluation.
+
+The feet feed uses local shoe/leg detection plus RGB and estimated near-body checks to reduce alerts from worn footwear. It does not ignore an entire near-feet area. The debug status shows candidate shoes and excluded pixels, and obstacle text identifies the camera and **horizontal** range. See [footwear filtering](docs/FOOTWEAR_FILTER.md) for limits and the physical regression check.
 
 ## Room memory and floorplan
 

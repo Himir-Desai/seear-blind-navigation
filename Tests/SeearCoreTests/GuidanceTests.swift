@@ -40,7 +40,8 @@ final class GuidanceTests: XCTestCase {
         let e = ready(); e.search("backpack")
         e.ingest(frame("feet",objects:[bag],obstacles:[Observation(label:"obstacle",confidence:1,bearing:0,distance:0.8)]))
         let result = e.evaluate(now:10,yaw:0,tracking:true)
-        XCTAssertNotNil(result.obstacle); XCTAssertNil(result.target); XCTAssertEqual(e.target,"backpack")
+        XCTAssertNotNil(result.obstacle); XCTAssertEqual(result.obstacle?.feed,"feet")
+        XCTAssertNil(result.target); XCTAssertEqual(e.target,"backpack")
         e.ingest(frame("feet",objects:[bag])); XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
     }
     func testOffPathAndInvalidDepthDoNotBecomeHazards() {
