@@ -7,19 +7,36 @@ import json
 import os
 import sys
 import time
+import threading
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
+output_lock = threading.Lock()
+
+
 def emit(value):
-    print(json.dumps(value, allow_nan=False, separators=(",", ":")), flush=True)
+    line = json.dumps(value, allow_nan=False, separators=(",", ":"))
+    with output_lock:
+        print(line,flush=True)
 
 
-def run(backend):
+def run(backend, mapping=False):
     from PIL import Image
     from geometry import scene_geometry
+    service = None
+    if mapping:
+        try:
+            from mapping_service import MappingService
+            from backend import DEPTH, SEGMENTATION, REVISIONS
+            source = dict(kind="monocular_estimate",units="estimated_meters",model=DEPTH,
+                          revision=REVISIONS[DEPTH],segmentation=SEGMENTATION,segmentationRevision=REVISIONS[SEGMENTATION],
+                          algorithm="depth-assisted-landmarks-floorplan-v1")
+            service = MappingService(emit,source)
+        except Exception as exc:
+            emit(dict(type="map_error",message="Room memory unavailable: " + str(exc)))
     emit(dict(type="ready", device=backend.device))
     for raw in sys.stdin:
         try:
@@ -41,14 +58,23 @@ def run(backend):
                          objects=objects, obstacles=obstacles, coverage=coverage,
                          inferenceMS=(time.monotonic() - start) * 1000)
             emit(dict(type="scene", scene=scene, id=request["id"]))
+            if service is not None:
+                try:
+                    service.submit(image,depth,request,objects)
+                except Exception as exc:
+                    service.disabled = True
+                    emit(dict(type="map_error",message="Room memory unavailable: " + str(exc)))
         except Exception as exc:
             # An invalid frame is an error, never an empty 'clear' scene.
             emit(dict(type="error", message=str(exc)))
+    if service is not None:
+        service.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fixture", action="store_true", help="Synthetic integration test only; no camera inference")
+    parser.add_argument("--no-mapping", action="store_true", help="Run live navigation without local room memory")
     args = parser.parse_args()
     try:
         if args.fixture:
@@ -60,7 +86,7 @@ if __name__ == "__main__":
             run(Fixture())
         else:
             from backend import LocalVision
-            run(LocalVision())
+            run(LocalVision(),mapping=not args.no_mapping)
     except Exception as exc:
         emit(dict(type="error", message="Local vision unavailable: " + str(exc)))
         sys.exit(1)

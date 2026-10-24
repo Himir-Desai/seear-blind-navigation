@@ -12,6 +12,8 @@ func visionCheck() throws {
         throw NSError(domain:"Supply the public two-cat sample at build/inference-sample.png (see docs/VALIDATION.md)",code:1)
     }
     let worker = VisionWorker()
+    let mapping = !CommandLine.arguments.contains("--no-mapping")
+    var mapUpdates = 0
     var count = 0, finished = false, failure: String?, times: [Double] = [], frames: [String:Double] = [:], maxPairAge = 0.0
     func submit() {
         let captured = ProcessInfo.processInfo.systemUptime
@@ -35,9 +37,14 @@ func visionCheck() throws {
         times.append(frame.inferenceMS)
         print(String(format:"PASS Swift → cached models → Swift: %@ · %.0f ms · %d cats",frame.feed,frame.inferenceMS,frame.objects.count))
         count += 1
-        if count == 8 { finished = true } else { submit() }
+        if count == 8 { finished = !mapping || mapUpdates > 0 } else { submit() }
     }
-    try worker.start(root:root)
+    worker.onMap = { snapshot in
+        mapUpdates += 1; print("PASS optional mapping response: \(snapshot.status)")
+        if count == 8 { finished = true }
+    }
+    worker.onMapError = { message in failure = message; finished = true }
+    try worker.start(root:root,mapping:mapping,mapDirectory:root.appendingPathComponent("build/mapping-smoke-"+UUID().uuidString))
     defer { worker.stop() }
     let deadline = Date().addingTimeInterval(90)
     while !finished && Date() < deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.02)) }

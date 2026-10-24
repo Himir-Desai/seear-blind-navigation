@@ -6,8 +6,10 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 DETECTOR = "google/owlv2-base-patch16-ensemble"
 DEPTH = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+SEGMENTATION = "nvidia/segformer-b0-finetuned-ade-512-512"
 REVISIONS = {DETECTOR: "cfd3195ba4ea9592eec887ded089f4c08eff231d",
-             DEPTH: "8078d68a9c75a972131914f6afd0c1723be0da7f"}
+             DEPTH: "8078d68a9c75a972131914f6afd0c1723be0da7f",
+             SEGMENTATION: "489d5cd81a0b59fab9b7ea758d3548ebe99677da"}
 
 
 def cache_root():
@@ -16,7 +18,7 @@ def cache_root():
 
 def download_models():
     from huggingface_hub import snapshot_download
-    for repo in (DETECTOR, DEPTH):
+    for repo in (DETECTOR, DEPTH, SEGMENTATION):
         snapshot_download(repo, revision=REVISIONS[repo], cache_dir=str(cache_root()),
                           allow_patterns=["*.json", "*.txt", "*.safetensors", "*.model"])
 

@@ -11,17 +11,21 @@ final class VisionWorker {
     var onScene: ((SceneFrame) -> Void)?
     var onStatus: ((String, Bool) -> Void)?
     var onDiagnostic: ((String) -> Void)?
+    var onMap: ((RoomMapSnapshot) -> Void)?
+    var onMapError: ((String) -> Void)?
     var generation = UUID().uuidString
-    func start(root: URL) throws {
+    func start(root: URL, mapping: Bool = true, mapDirectory: URL? = nil) throws {
         let python = root.appendingPathComponent(".venv/bin/python3")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             throw NSError(domain: "Run scripts/setup-vision.sh first", code: 1)
         }
         process.executableURL = python
         process.arguments = ["-u", root.appendingPathComponent("vision/worker.py").path]
+        if !mapping { process.arguments?.append("--no-mapping") }
         process.currentDirectoryURL = root
         var env = ProcessInfo.processInfo.environment
         env["HF_HUB_OFFLINE"] = "1"; env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+        if let mapDirectory { env["SEEAR_MAPS"] = mapDirectory.path }
         process.environment = env
         process.standardInput = input; process.standardOutput = output; process.standardError = errors
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -56,6 +60,14 @@ final class VisionWorker {
                     DispatchQueue.main.async { self.busy = false; self.onScene?(decoded) }
                 } else if type == "error" {
                     DispatchQueue.main.async { self.busy = false; self.onStatus?(object["message"] as? String ?? "Vision error", false) }
+                } else if type == "map", let snapshot = object["map"] {
+                    // Optional mapping cannot invalidate a good live guidance scene.
+                    if let data = try? JSONSerialization.data(withJSONObject:snapshot),
+                       let decoded = try? JSONDecoder().decode(RoomMapSnapshot.self,from:data), decoded.valid {
+                        DispatchQueue.main.async { self.onMap?(decoded) }
+                    } else { DispatchQueue.main.async { self.onMapError?("Invalid optional map update; live alerts continue") } }
+                } else if type == "map_error" {
+                    DispatchQueue.main.async { self.onMapError?(object["message"] as? String ?? "Room memory unavailable") }
                 }
             } catch { DispatchQueue.main.async { self.busy = false; self.onStatus?("Invalid vision response: \(error.localizedDescription)", false) } }
         }
@@ -77,10 +89,13 @@ final class VisionWorker {
         }
     }
     func stop() {
-        onScene = nil; onStatus = nil; onDiagnostic = nil
-        output.fileHandleForReading.readabilityHandler = nil; errors.fileHandleForReading.readabilityHandler = nil
+        onScene = nil; onStatus = nil; onDiagnostic = nil; onMap = nil; onMapError = nil
+        // Keep draining pipes during graceful EOF/checkpoint; callbacks are cleared.
         try? input.fileHandleForWriting.close()
-        if process.isRunning { process.terminate() }
+        // EOF lets the mapper checkpoint after the last live inference. Do not
+        // block the main/audio thread if a backend does not exit promptly.
+        let child = process
+        if child.isRunning { DispatchQueue.global().asyncAfter(deadline:.now()+3) { if child.isRunning { child.terminate() } } }
         ready = false
     }
     deinit { stop() }
