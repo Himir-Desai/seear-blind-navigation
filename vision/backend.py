@@ -1,0 +1,64 @@
+"""Replaceable local detector + metric monocular-depth backend. No remote inference."""
+import os
+from pathlib import Path
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+DETECTOR = "google/owlv2-base-patch16-ensemble"
+DEPTH = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+REVISIONS = {DETECTOR: "cfd3195ba4ea9592eec887ded089f4c08eff231d",
+             DEPTH: "8078d68a9c75a972131914f6afd0c1723be0da7f"}
+
+
+def cache_root():
+    return Path(os.environ.get("SEEAR_MODELS", str(ROOT / "models")))
+
+
+def download_models():
+    from huggingface_hub import snapshot_download
+    for repo in (DETECTOR, DEPTH):
+        snapshot_download(repo, revision=REVISIONS[repo], cache_dir=str(cache_root()),
+                          allow_patterns=["*.json", "*.txt", "*.safetensors", "*.model"])
+
+
+class LocalVision:
+    def __init__(self):
+        import torch
+        from transformers import (Owlv2Processor, Owlv2ForObjectDetection,
+                                  AutoImageProcessor, AutoModelForDepthEstimation)
+        self.torch = torch
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        self.detector_dtype = torch.float16 if self.device == "mps" else torch.float32
+        torch.set_num_threads(4)
+        args = dict(cache_dir=str(cache_root()), local_files_only=True)
+        self.detector_processor = Owlv2Processor.from_pretrained(DETECTOR, revision=REVISIONS[DETECTOR], use_fast=False, **args)
+        self.detector = Owlv2ForObjectDetection.from_pretrained(DETECTOR, revision=REVISIONS[DETECTOR], use_safetensors=True, **args).to(device=self.device,dtype=self.detector_dtype).eval()
+        self.depth_processor = AutoImageProcessor.from_pretrained(DEPTH, revision=REVISIONS[DEPTH], use_fast=False, **args)
+        self.depth_model = AutoModelForDepthEstimation.from_pretrained(DEPTH, revision=REVISIONS[DEPTH], use_safetensors=True, **args).to(self.device).eval()
+        # Pay Metal graph compilation at startup, before publishing fresh scene results.
+        from PIL import Image
+        self.infer(Image.new("RGB", (640, 480), "gray"), "white cane")
+
+    def infer(self, image, target):
+        torch = self.torch
+        with torch.inference_mode():
+            inputs = self.depth_processor(images=image, return_tensors="pt").to(self.device)
+            prediction = self.depth_model(**inputs).predicted_depth
+            depth = torch.nn.functional.interpolate(prediction.unsqueeze(1), size=(image.height, image.width),
+                                                    mode="bilinear", align_corners=False)[0, 0].cpu().numpy()
+            detections = []
+            if target:
+                prompts = [["a photo of a " + target]]
+                inputs = self.detector_processor(text=prompts, images=image, return_tensors="pt").to(self.device)
+                inputs = {key: value.to(dtype=self.detector_dtype) if value.is_floating_point() else value
+                          for key, value in inputs.items()}
+                result = self.detector_processor.post_process_grounded_object_detection(
+                    self.detector(**inputs), threshold=.15,
+                    target_sizes=torch.tensor([[image.height, image.width]], device=self.device))[0]
+                # NMS for a single query prevents duplicate boxes becoming different objects.
+                from torchvision.ops import nms
+                boxes, scores = result["boxes"].float().cpu(), result["scores"].float().cpu()
+                for i in nms(boxes, scores, .4)[:8]:
+                    box = boxes[i].numpy() / np.array([image.width, image.height] * 2)
+                    detections.append(dict(label=target, confidence=float(scores[i]), box=box.tolist()))
+        return depth, detections
