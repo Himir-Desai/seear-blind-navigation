@@ -41,14 +41,21 @@ public struct Observation: Codable, Equatable {
     public var elevation: Double
     public var distance: Double
     public var box: [Double]
+    public var trackID: String?
+    public var classificationCaptured: Double?
+    public var trackingQuality: Double?
     public init(label: String, confidence: Double, bearing: Double, elevation: Double = 0,
-                distance: Double, box: [Double] = []) {
+                distance: Double, box: [Double] = [], trackID: String? = nil, classificationCaptured: Double? = nil, trackingQuality: Double? = nil) {
         self.label = label; self.confidence = confidence; self.bearing = bearing
         self.elevation = elevation; self.distance = distance; self.box = box
+        self.trackID = trackID; self.classificationCaptured = classificationCaptured; self.trackingQuality = trackingQuality
     }
     public var valid: Bool {
         confidence.isFinite && (0...1).contains(confidence) && bearing.isFinite && elevation.isFinite &&
-        distance.isFinite && distance > 0 && distance <= 30
+        distance.isFinite && distance > 0 && distance <= 30 &&
+        (trackID.map { !$0.isEmpty && $0.count <= 64 && classificationCaptured != nil && trackingQuality != nil } ?? true) &&
+        (classificationCaptured.map { $0.isFinite && $0 >= 0 } ?? true) &&
+        (trackingQuality.map { $0.isFinite && (0.55...1).contains($0) } ?? true)
     }
 }
 
@@ -63,6 +70,16 @@ public struct WearerFilter: Codable {
     }
 }
 
+public struct PerceptionStats: Codable {
+    public var depthMS: Double
+    public var trackingMS: Double
+    public var detectorMS: Double
+    public var mode: String
+    public var classified: Double?
+    public var detectorBusy: Bool
+    public var classifierError: String
+}
+
 public struct SceneFrame: Codable {
     public var feed: String
     public var captured: Double
@@ -73,10 +90,12 @@ public struct SceneFrame: Codable {
     public var coverage: Double
     public var inferenceMS: Double
     public var rotation: Rotation3D?
+    public var searchID: String?
+    public var perception: PerceptionStats?
     public var wearerFilter: WearerFilter?
     public init(feed: String, captured: Double, yaw: Double, target: String, objects: [Observation],
-                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0, wearerFilter: WearerFilter? = nil, rotation: Rotation3D? = nil) {
-        self.feed = feed; self.captured = captured; self.yaw = yaw; self.target = target; self.rotation = rotation
+                obstacles: [Observation], coverage: Double = 1, inferenceMS: Double = 0, wearerFilter: WearerFilter? = nil, rotation: Rotation3D? = nil, searchID: String? = nil, perception: PerceptionStats? = nil) {
+        self.feed = feed; self.captured = captured; self.yaw = yaw; self.target = target; self.rotation = rotation; self.searchID = searchID; self.perception = perception
         self.objects = objects; self.obstacles = obstacles; self.coverage = coverage; self.inferenceMS = inferenceMS; self.wearerFilter = wearerFilter
     }
 }
@@ -111,12 +130,15 @@ public final class GuidanceEngine {
     public var target: String = ""
     public var maxAge: Double = 1.5
     public var itemConfidencePolicy = ItemConfidencePolicy.demo
+    public private(set) var searchID = UUID().uuidString
+    private var confirmedObstacles: [String:Set<Int>] = [:]
     public private(set) var isPaused = false
     public private(set) var frames: [String: SceneFrame] = [:]
     /// One accepted item for the debug overlay, including while an urgent hazard mutes its sound.
     public private(set) var selectedItem: (feed: String, observation: Observation)?
     private struct ItemLock {
         var feed: String
+        var trackID: String?
         var bearing: Double
         var distance: Double
         var confidence: Double
@@ -126,16 +148,28 @@ public final class GuidanceEngine {
     }
     private var lockedTarget: ItemLock?
     private var acquiredItem = false
+    public var selectedTrackID: String? { lockedTarget?.trackID }
     public var needsItemReselection: Bool { acquiredItem && lockedTarget == nil && !target.isEmpty }
     public init() {}
-    public func reset() { frames.removeAll(); lockedTarget = nil; selectedItem = nil }
-    public func pause() { isPaused = true; frames.removeAll(); selectedItem = nil }
-    public func resume() { isPaused = false; frames.removeAll(); selectedItem = nil }
-    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); lockedTarget = nil; acquiredItem = false; selectedItem = nil }
+    public func reset() { frames.removeAll(); confirmedObstacles.removeAll(); lockedTarget = nil; selectedItem = nil; searchID = UUID().uuidString }
+    public func pause() { isPaused = true; frames.removeAll(); confirmedObstacles.removeAll(); selectedItem = nil }
+    public func resume() { isPaused = false; frames.removeAll(); confirmedObstacles.removeAll(); selectedItem = nil }
+    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); searchID = UUID().uuidString; lockedTarget = nil; acquiredItem = false; selectedItem = nil }
     public func ingest(_ frame: SceneFrame) {
         guard ["front", "feet"].contains(frame.feed), frame.captured.isFinite, frame.yaw.isFinite,
               frame.coverage.isFinite, (0...1).contains(frame.coverage), frame.rotation?.valid ?? true,
               frames[frame.feed].map({ $0.captured <= frame.captured }) ?? true else { return }
+        var confirmed = Set<Int>()
+        if let previous = frames[frame.feed], frame.captured > previous.captured,
+           frame.captured-previous.captured <= 0.6, previous.coverage >= 0.6 {
+            for (index,o) in frame.obstacles.enumerated() where o.valid {
+                if previous.obstacles.contains(where: { old in
+                    old.valid && abs(Geometry.wrap(o.bearing+frame.yaw-old.bearing-previous.yaw))<15 &&
+                    abs(o.distance-old.distance)<0.15
+                }) { confirmed.insert(index) }
+            }
+        }
+        confirmedObstacles[frame.feed] = confirmed
         frames[frame.feed] = frame
     }
     public func evaluate(now: Double, yaw: Double, tracking: Bool) -> Guidance {
@@ -149,12 +183,13 @@ public final class GuidanceEngine {
         guard fresh.count == 2 else { return unavailable("Camera or vision delayed. Guidance paused.") }
         var hazards: [(SceneFrame, Observation)] = []
         for frame in fresh {
-            for o in frame.obstacles where o.valid {
+            for (index,o) in frame.obstacles.enumerated() where o.valid && o.distance <= ObstacleSound.warningRange {
                 // A turn changes the corridor immediately; a source already observed
                 // stays at its capture bearing until a new image refreshes it.
                 let angle = Geometry.relative(o.bearing + frame.yaw, yaw: yaw) * .pi / 180
                 let lateral = sin(angle) * o.distance, forward = cos(angle) * o.distance
-                if abs(lateral) <= 0.55 && forward > 0 && forward <= 3 {
+                if abs(lateral) <= 0.55 && forward > 1e-6 &&
+                   (o.distance <= ObstacleSound.emergencyRange || confirmedObstacles[frame.feed]?.contains(index) == true) {
                     hazards.append((frame, o))
                 }
             }
@@ -162,8 +197,12 @@ public final class GuidanceEngine {
         let hazard = hazards.min { $0.1.distance < $1.1.distance }
         var candidates: [(SceneFrame, Observation)] = []
         if !target.isEmpty {
-            for f in fresh where f.target == target {
-                for o in f.objects where o.valid && o.label == target { candidates.append((f, o)) }
+            for f in fresh where f.target == target && (f.searchID == nil || f.searchID == searchID) {
+                for o in f.objects where o.valid && o.label == target {
+                    if let classified = o.classificationCaptured,
+                       !(classified <= f.captured && now-classified <= 2.5) { continue }
+                    candidates.append((f,o))
+                }
             }
         }
         let eligible = candidates.filter { itemConfidencePolicy.accepts($0.1.confidence) }
@@ -179,6 +218,10 @@ public final class GuidanceEngine {
             }
             let matches = candidates.compactMap { frame,observation -> (SceneFrame,Observation,Double)? in
                 guard frame.feed == lock.feed, frame.captured >= lock.captured else { return nil }
+                if let lockedID = lock.trackID, let observedID = observation.trackID {
+                    return lockedID == observedID ? (frame,observation,0) : nil
+                }
+                // Legacy/nontracking backends retain approximate geometric association.
                 let angle = abs(Geometry.wrap(observation.bearing+frame.yaw-lock.bearing))
                 let range = abs(observation.distance-lock.distance), rangeGate = max(0.8,lock.distance*0.6)
                 guard angle < 20, range < rangeGate else { return nil }
@@ -198,7 +241,12 @@ public final class GuidanceEngine {
                 selected = associatedCurrent.flatMap { itemConfidencePolicy.accepts($0.1.confidence) ? $0 : nil }
             }
         } else if !acquiredItem {
-            selected = best
+            // The first fast depth replies can precede either background scan.
+            // Compare both initial scans before establishing a persistent lock.
+            let scannedBoth = fresh.allSatisfy { frame in
+                frame.perception.map { $0.classified != nil && (frame.searchID == nil || frame.searchID == searchID) } ?? true
+            }
+            selected = scannedBoth ? best : nil
         } else {
             // A reference/backend reset invalidated the identity. Require Find again.
             selected = nil
@@ -206,15 +254,15 @@ public final class GuidanceEngine {
         // A weak current association can update the comparison score without
         // emitting an item cue or box below the floor.
         if let (frame,observation) = selected ?? associatedCurrent {
-            lockedTarget = ItemLock(feed:frame.feed,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
+            lockedTarget = ItemLock(feed:frame.feed,trackID:observation.trackID,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
                                     confidence:observation.confidence,box:observation.box,rotation:frame.rotation ?? .heading(frame.yaw),captured:frame.captured)
             acquiredItem = true
         }
         if let (frame,observation) = selected { selectedItem = (frame.feed,observation) }
-        let urgent = hazard.map { $0.1.distance <= 1.2 } ?? false
-        return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: hazard == nil ? 1 : 0.2) },
+        let urgent = hazard.map { $0.1.distance <= ObstacleSound.emergencyRange } ?? false
+        return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: 1) },
                         obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true, feed: $0.0.feed) },
-                        status: hazard != nil ? "Obstacle in forward view" : target.isEmpty ? "Monitoring forward view" : needsItemReselection ? "Find again to reselect \(target)" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
+                        status: urgent ? "Emergency obstacle nearby" : hazard != nil ? "Quiet nearby obstacle warning" : target.isEmpty ? "Monitoring forward view" : needsItemReselection ? "Find again to reselect \(target)" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
     }
 }
 

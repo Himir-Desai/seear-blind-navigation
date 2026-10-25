@@ -27,11 +27,12 @@ final class ItemConfidenceTests: XCTestCase {
         let e = engine(score:0.75)
         XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
         var feet = frame("feet",nil,at:10.2)
-        feet.obstacles = [Observation(label:"obstacle",confidence:1,bearing:0,distance:2)]
+        feet.obstacles = [Observation(label:"obstacle",confidence:1,bearing:0,distance:0.15)]
         e.ingest(feet); e.ingest(frame("front",0.50,at:10.2))
         let state = e.evaluate(now:10.2,yaw:0,tracking:true)
         XCTAssertFalse(state.fault); XCTAssertNotNil(state.obstacle)
         XCTAssertNil(state.target); XCTAssertNil(e.selectedItem)
+        e.ingest(frame("feet",nil,at:10.3)) // Emergency cleared before testing the recovered item score.
         e.ingest(frame("front",0.65,at:10.3))
         XCTAssertNotNil(e.evaluate(now:10.3,yaw:0,tracking:true).target)
     }

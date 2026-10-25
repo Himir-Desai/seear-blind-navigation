@@ -52,31 +52,40 @@ class LocalVision:
         return self._infer(image,target,True)
 
     def _infer(self, image, target, wearer):
-        from types import SimpleNamespace
+        depth = self.estimate_depth(image)
+        objects,body = self.detect(image,target,wearer)
+        return depth,objects,body
+
+    def estimate_depth(self, image):
         torch = self.torch
         with torch.inference_mode():
             inputs = self.depth_processor(images=image, return_tensors="pt").to(self.device)
             prediction = self.depth_model(**inputs).predicted_depth
-            depth = torch.nn.functional.interpolate(prediction.unsqueeze(1), size=(image.height, image.width),
-                                                    mode="bilinear", align_corners=False)[0, 0].cpu().numpy()
-            detections,body = [],[]
-            queries = ([target] if target else []) + (["shoe","leg"] if wearer else [])
-            if queries:
-                prompts = [["a photo of a " + label for label in queries]]
-                inputs = self.detector_processor(text=prompts, images=image, return_tensors="pt").to(self.device)
-                inputs = {key: value.to(dtype=self.detector_dtype) if value.is_floating_point() else value
-                          for key, value in inputs.items()}
-                output = self.detector(**inputs)
-                from torchvision.ops import nms
-                # Independent per-query scores preserve item results when a shoe/leg
-                # prompt scores higher on the same image patch. Share one image pass.
-                for query,label in enumerate(queries):
-                    result = self.detector_processor.post_process_grounded_object_detection(
-                        SimpleNamespace(logits=output.logits[:,:,query:query+1],pred_boxes=output.pred_boxes),threshold=.15,
-                        target_sizes=torch.tensor([[image.height,image.width]],device=self.device))[0]
-                    boxes,scores = result["boxes"].float().cpu(),result["scores"].float().cpu()
-                    destination = detections if target and query == 0 else body
-                    for i in nms(boxes,scores,.4)[:8]:
-                        box = boxes[i].numpy()/np.array([image.width,image.height]*2)
-                        destination.append(dict(label=label,confidence=float(scores[i]),box=box.tolist()))
-        return depth,detections,body
+            return torch.nn.functional.interpolate(prediction.unsqueeze(1), size=(image.height, image.width),
+                mode="bilinear", align_corners=False)[0, 0].cpu().numpy()
+
+    def detect(self, image, target, wearer=False):
+        """Only the background classifier calls this; depth has an independent model."""
+        from types import SimpleNamespace
+        torch = self.torch
+        detections,body = [],[]
+        queries = ([target] if target else []) + (["shoe","leg"] if wearer else [])
+        if not queries:
+            return detections,body
+        with torch.inference_mode():
+            prompts = [["a photo of a " + label for label in queries]]
+            inputs = self.detector_processor(text=prompts, images=image, return_tensors="pt").to(self.device)
+            inputs = {key: value.to(dtype=self.detector_dtype) if value.is_floating_point() else value
+                      for key, value in inputs.items()}
+            output = self.detector(**inputs)
+            from torchvision.ops import nms
+            for query,label in enumerate(queries):
+                result = self.detector_processor.post_process_grounded_object_detection(
+                    SimpleNamespace(logits=output.logits[:,:,query:query+1],pred_boxes=output.pred_boxes),threshold=.15,
+                    target_sizes=torch.tensor([[image.height,image.width]],device=self.device))[0]
+                boxes,scores = result["boxes"].float().cpu(),result["scores"].float().cpu()
+                destination = detections if target and query == 0 else body
+                for i in nms(boxes,scores,.4)[:8]:
+                    box = boxes[i].numpy()/np.array([image.width,image.height]*2)
+                    destination.append(dict(label=label,confidence=float(scores[i]),box=box.tolist()))
+        return detections,body

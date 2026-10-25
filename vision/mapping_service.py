@@ -14,12 +14,16 @@ class MappingService:
         self.mailbox = queue.Queue(maxsize=1)
         self.stopping = threading.Event()
         self.disabled = False
+        self.last_submit = -float("inf")
         self.thread = threading.Thread(target=self._run, name="room-memory", daemon=True)
         self.thread.start()
 
     def submit(self, image, depth, request, objects):
         if self.disabled or self.stopping.is_set() or request["feed"] != "front":
             return
+        if request["captured"]-self.last_submit < .5:
+            return # At most 2 Hz; faster live depth must not flood CPU segmentation.
+        self.last_submit = request["captured"]
         task = (image.copy(), depth.copy(), dict(request["geometry"]), request["captured"],
                 [o["box"] for o in objects if o["box"]], request.get("tilt"))
         try:

@@ -12,6 +12,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var audio: SpatialAudio?, worker: VisionWorker?
     private var cameras: [Camera] = [], devices: [AVCaptureDevice] = []
     private var images: [String: CapturedImage] = [:]
+    private var lastSubmitted: [String:Double] = [:]
     private var cameraGeometry: [String: CameraGeometry] = [:]
     private var running = false, nextFeed = "front", visionOK = false
     private var referenceGeneration = 0
@@ -126,7 +127,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         status.font = .systemFont(ofSize:20,weight:.semibold); status.setAccessibilityLabel("Guidance status")
         stack.addArrangedSubview(status); stack.addArrangedSubview(detail)
         stack.addArrangedSubview(row([visionStatus,voiceStatus]))
-        stack.addArrangedSubview(text("Setup: wear AirPods and select stereo output. Choose a microphone that can hear the wearer. Check left/right audio before use. No heading calibration or turn reset is required; head pitch and roll are compensated automatically.",size:12))
+        stack.addArrangedSubview(text("Obstacles: silent beyond 0.50 m; soft warnings to 0.20 m; emergency-only priority at 0.20 m. Setup: wear AirPods and select stereo output. Choose a microphone that can hear the wearer. Check left/right audio before use. No heading calibration or turn reset is required; head pitch and roll are compensated automatically.",size:12))
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         let menu = NSMenu(), item = NSMenuItem(); menu.addItem(item)
         let appMenu = NSMenu(); appMenu.addItem(withTitle:"Quit Seear",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q"); item.submenu = appMenu; NSApp.mainMenu = menu
@@ -202,7 +203,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             tracker.beginSession()
             let audio = SpatialAudio(); try audio.start(); self.audio = audio
-            guidance.resume(); images.removeAll(); visionOK = false; started = ProcessInfo.processInfo.systemUptime
+            guidance.resume(); images.removeAll(); lastSubmitted.removeAll(); visionOK = false; started = ProcessInfo.processInfo.systemUptime
             running = true; previouslyFaulted = true; startButton.title = "Stop backend"; settings.forEach { $0.isEnabled = false }
             let worker = VisionWorker(); self.worker = worker
             mapView.snapshot = nil
@@ -212,8 +213,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             worker.onScene = { [weak self] frame in
                 guard let self, self.running, frame.captured >= self.tracker.referenceStarted else { return }
                 self.guidance.ingest(frame)
-                if frame.feed == "feet", let filter = frame.wearerFilter, filter.valid {
-                    self.visionStatus.stringValue = "Local vision · feet: \(filter.shoes) shoe candidates, \(filter.excludedPixels) pixels excluded"
+                if let stats = frame.perception {
+                    let age = stats.classified.map { String(format:"%.1f s",max(0,frame.captured-$0)) } ?? "waiting"
+                    self.visionStatus.stringValue = String(format:"Local vision · depth %.0f ms · %@ · classification %@%@",stats.depthMS,stats.mode,age,stats.classifierError.isEmpty ? "" : " · classifier retrying")
+                    if frame.feed == "feet", let filter = frame.wearerFilter {
+                        self.visionStatus.stringValue += " · feet \(filter.excludedPixels) px excluded"
+                    }
                 }
                 self.visionOK = true
             }
@@ -265,8 +270,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         let poseOK = tracker.usable
         if worker?.ready == true, worker?.busy == false, poseOK {
-            if let image = images[nextFeed], now-image.timestamp < 0.4, let geometry = cameraGeometry[nextFeed] {
-                worker?.submit(image,feed:nextFeed,target:guidance.target,geometry:geometry)
+            if let image = images[nextFeed], now-image.timestamp < 0.4, image.timestamp > lastSubmitted[nextFeed,default:0], let geometry = cameraGeometry[nextFeed] {
+                worker?.submit(image,feed:nextFeed,target:guidance.target,geometry:geometry,searchID:guidance.searchID,selectedTrackID:guidance.selectedTrackID)
+                lastSubmitted[nextFeed] = image.timestamp
                 nextFeed = nextFeed == "front" ? "feet" : "front"
             }
         }

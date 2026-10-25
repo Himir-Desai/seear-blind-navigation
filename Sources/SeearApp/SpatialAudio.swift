@@ -6,27 +6,47 @@ import SeearCore
 /// Adapted from P4 Hybrid 2.1. Two mono voices pass through Apple's HRTFHQ;
 /// Item: inherited soft single pulse. Hazard: bright two-note double beep, no FOV mute.
 final class PulseVoice {
-    struct Control { var gain = 0.0; var rate = 1.0; var sharpness = 1.0; var hazard = false }
+    struct Control { var gain = 0.0; var rate = 1.0; var sharpness = 1.0; var hazard = false; var emergency = false }
     private let control = OSAllocatedUnfairLock(initialState: Control())
     private var current = Control(), gain = 0.0, rate = 1.0, phase = 0.0, tone = 0.0
+    private var audioTime = 0.0, hazardStarted = 0.0, nextSoftAllowed = 0.0
     private var noise: UInt64 = 0x1234567
     lazy var node = AVAudioSourceNode(format: AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!) {
         [weak self] _, _, frames, list -> OSStatus in
         guard let self else { return noErr }
-        if let next = self.control.withLockIfAvailable({ $0 }) { self.current = next }
+        if let next = self.control.withLockIfAvailable({ $0 }) {
+            if next.hazard && next.gain > 0 && (self.current.gain == 0 || next.emergency != self.current.emergency) {
+                self.hazardStarted = next.emergency ? self.audioTime : max(self.audioTime,self.nextSoftAllowed)
+                self.rate = next.rate
+            }
+            self.current = next
+        }
         let buffers = UnsafeMutableAudioBufferListPointer(list)
         for frame in 0..<Int(frames) {
             self.gain += (self.current.gain - self.gain) * 0.001
             self.rate += (self.current.rate - self.rate) * 0.001
-            self.phase += self.rate / 48000; self.phase -= floor(self.phase)
-            let frequency = self.current.hazard ? (self.phase < 0.3 ? 1200.0 : 1800.0) : 440.0
+            var hazardPhase = self.audioTime-self.hazardStarted
+            if self.current.hazard {
+                if self.current.gain > 0 && hazardPhase >= 1/max(0.1,self.rate) {
+                    self.hazardStarted = self.audioTime; hazardPhase = 0
+                }
+                if self.current.gain > 0 && !self.current.emergency && hazardPhase >= 0 {
+                    self.nextSoftAllowed = self.hazardStarted+3
+                }
+            } else {
+                self.phase += self.rate/48000; self.phase -= floor(self.phase)
+            }
+            self.audioTime += 1.0/48000
+            let frequency = self.current.hazard ? (hazardPhase < 0.11 ? 1200.0 : 1800.0) : 440.0
             self.tone += frequency / 48000; self.tone -= floor(self.tone)
             self.noise ^= self.noise << 13; self.noise ^= self.noise >> 7; self.noise ^= self.noise << 17
             let white = Double(self.noise >> 11) / 9007199254740992 * 2 - 1
             let envelope: Double, carrier: Double
             if self.current.hazard {
-                // Two short, smoothly gated notes per cycle, with a clear gap.
-                let local = self.phase < 0.3 ? self.phase / 0.18 : (self.phase - 0.3) / 0.18
+                // Fixed-duration taps: slowing the warning rate must not turn
+                // brief notes into a long, intrusive tone.
+                let duration = self.current.emergency ? 0.07 : 0.045
+                let local = hazardPhase < 0.11 ? hazardPhase/duration : (hazardPhase-0.11)/duration
                 envelope = local >= 0 && local < 1 ? pow(sin(.pi * local),2) : 0
                 let harmonic = (sin(2 * .pi * self.tone) + 0.25 * sin(4 * .pi * self.tone)) / 1.25
                 carrier = 0.08 * white + 0.075 * harmonic
@@ -43,10 +63,11 @@ final class PulseVoice {
     func update(cue: Cue?, relativeAngle: Double) {
         control.withLock { state in
             guard let cue else { state.gain = 0; return }
-            state = Control(gain: SoundMapping.gain(cue.distance) * cue.level *
-                            (cue.hazard ? 1 : SoundMapping.visibility(angle: relativeAngle, distance: cue.distance)),
-                            rate: cue.hazard ? min(5, SoundMapping.rate(cue.distance) * 1.4) : SoundMapping.rate(cue.distance),
-                            sharpness: cue.hazard ? 1 : SoundMapping.sharpness(relativeAngle), hazard: cue.hazard)
+            let gain = cue.hazard ? ObstacleSound.gain(cue.distance) : SoundMapping.gain(cue.distance) * SoundMapping.visibility(angle:relativeAngle,distance:cue.distance)
+            state = Control(gain:gain*cue.level,
+                            rate:cue.hazard ? ObstacleSound.rate(cue.distance) : SoundMapping.rate(cue.distance),
+                            sharpness:cue.hazard ? 1 : SoundMapping.sharpness(relativeAngle),hazard:cue.hazard,
+                            emergency:cue.hazard && cue.distance <= ObstacleSound.emergencyRange)
         }
     }
 }
