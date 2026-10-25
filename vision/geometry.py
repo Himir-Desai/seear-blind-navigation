@@ -1,6 +1,7 @@
 """RGB-derived geometry. All distances are estimates, never sensor measurements."""
 import math
 import numpy as np
+import cv2
 
 
 def tilt_matrix(tilt=None):
@@ -43,9 +44,11 @@ def observation(label, confidence, x, forward, vertical, height, box=None):
                 distance=horizontal, box=box or [])
 
 
-def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, excluded=None, tilt=None):
+def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, excluded=None, tilt=None, feed="front"):
     if not 0.1 <= scale <= 5:
         raise ValueError("Depth scale must be between 0.1 and 5")
+    if feed not in ("front","feet"):
+        raise ValueError("Invalid camera feed")
     depth = np.asarray(depth, dtype=np.float32) * scale
     valid = np.isfinite(depth) & (depth > 0.05) & (depth < 30)
     coverage = float(valid.mean())
@@ -74,11 +77,37 @@ def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, exc
     # Exclude estimated floor and points above head height. RGB errors can still create
     # false positives/negatives; this is not a drop-off or walkable-space detector.
     occupied = valid & (vertical > .12) & (vertical < 2.2) & (forward > .1) & (forward < 4)
+    near_feet = np.zeros_like(valid)
+    if feed == "feet":
+        # A small supported block can be much smaller than an 18%-occupied tile.
+        # All coordinates are tilt-compensated; there is no distance-only blind zone.
+        ground_range = np.hypot(x,forward)
+        near_feet = valid & (vertical > .03) & (vertical <= .30) & (forward > .02) & (np.abs(x) <= .35) & (ground_range <= .50)
+        occupied &= ~near_feet
     if excluded is not None:
         excluded = np.asarray(excluded)
         if excluded.shape != occupied.shape or excluded.dtype != bool:
             raise ValueError("Invalid wearer exclusion mask")
         occupied &= ~excluded
+        near_feet &= ~excluded
+    if near_feet.any():
+        count,labels,stats,_ = cv2.connectedComponentsWithStats(near_feet.astype(np.uint8),connectivity=8)
+        supported = [i for i in range(1,count) if stats[i,cv2.CC_STAT_AREA] >= max(9,round(h*w*.0001))]
+        # Bound component work without letting a large farther patch displace a
+        # small closer block. Recompute robust ranges only for nearest candidates.
+        minimum = np.full(count,np.inf)
+        np.minimum.at(minimum,labels[near_feet],ground_range[near_feet])
+        supported.sort(key=lambda i:minimum[i])
+        low = []
+        for i in supported[:32]:
+            left,top,width,pixels_h,_ = stats[i]
+            ys,xs = slice(top,top+pixels_h),slice(left,left+width)
+            mask = labels[ys,xs] == i
+            ranges = np.hypot(x[ys,xs][mask],forward[ys,xs][mask])
+            near = ranges <= np.quantile(ranges,.25)
+            coords = [float(np.median(a[ys,xs][mask][near])) for a in (x,forward,vertical)]
+            low.append(observation("low_obstacle",1,*coords,height))
+        obstacles.extend(sorted(low,key=lambda o:o["distance"])[:8])
     for row in range(6):
         for col in range(12):
             ys = slice(row * h // 6, (row + 1) * h // 6)
