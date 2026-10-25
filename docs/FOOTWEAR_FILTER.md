@@ -25,3 +25,5 @@ For the supervised hardware recheck, verify the measured height/angle first, the
 Primary model references: [OWLv2 detection API](https://huggingface.co/docs/transformers/model_doc/owlv2), [metric depth model](https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf). Masking is this project's heuristic; those references do not validate wearer identification.
 
 B6 applies the same capture-time head tilt as live obstacle geometry before near-body checks. The fixed camera mount angle is unchanged; nodding/rolling does not move the estimated floor or footwear volume with the image. A cap slipping relative to the head, unknown body heading or inaccurate RGB depth can still invalidate that heuristic.
+
+B1/B7 now classify footwear on the slower background schedule and move accepted shoe/leg boxes with validated image features between classifications. The foreground/depth near-body checks still run on each current feet frame. Invalid/occluded/expired tracks do not erase pixels. Classification older than 2.5 s is not used. This keeps the conservative pixel mask without forcing a full OWLv2 pass on every feet image.

@@ -15,12 +15,25 @@ func visionCheck() throws {
     let mapping = !CommandLine.arguments.contains("--no-mapping")
     var mapUpdates = 0
     var count = 0, finished = false, failure: String?, times: [Double] = [], frames: [String:Double] = [:], maxPairAge = 0.0
+    var began = 0.0, identities: [String:String] = [:], trackedFrames = 0
+    var classifications: [String:Set<Double>] = [:]
     let smokeRotation = Rotation3D.axis(SIMD3(0,0,1),degrees:25)
         .followed(by:.axis(SIMD3(1,0,0),degrees:20)).followed(by:.heading(30))
+    let moving = CommandLine.arguments.contains("--moving-sample")
+    func sample() -> CGImage {
+        guard moving,
+              let context = CGContext(data:nil,width:image.width,height:image.height,bitsPerComponent:8,bytesPerRow:0,
+                                      space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        context.setFillColor(CGColor(gray:0.2,alpha:1)); context.fill(CGRect(x:0,y:0,width:image.width,height:image.height))
+        context.translateBy(x:sin(Double(count)*0.2)*12,y:cos(Double(count)*0.15)*6)
+        context.draw(image,in:CGRect(x:0,y:0,width:image.width,height:image.height))
+        return context.makeImage() ?? image
+    }
     func submit() {
         let captured = ProcessInfo.processInfo.systemUptime
-        worker.submit(CapturedImage(image:image,timestamp:captured,yaw:30,rotation:smokeRotation),feed:count % 2 == 0 ? "front" : "feet",
-                      target:"cat",geometry:CameraGeometry(pitch:count % 2 == 0 ? 0 : 90))
+        if began == 0 { began = captured }
+        worker.submit(CapturedImage(image:sample(),timestamp:captured,yaw:30,rotation:smokeRotation),feed:count % 2 == 0 ? "front" : "feet",
+                      target:"cat",geometry:CameraGeometry(pitch:count % 2 == 0 ? 0 : 90),searchID:"vision-smoke",selectedTrackID:identities["front"])
     }
     worker.onStatus = { message, ok in
         if ok { print(message); submit() } else { failure = message; finished = true }
@@ -28,29 +41,37 @@ func visionCheck() throws {
     worker.onDiagnostic = { fputs($0,stderr) }
     worker.onScene = { frame in
         let now = ProcessInfo.processInfo.systemUptime
-        guard frame.objects.contains(where: { $0.label == "cat" }), frame.objects.allSatisfy(\.valid), frame.coverage > 0.99, let rotation = frame.rotation, rotation.difference(from:smokeRotation) < 0.001 else {
-            failure = "Real model scene/box/depth validation failed"; finished = true; return
+        guard frame.objects.allSatisfy(\.valid), frame.coverage > 0.99,
+              let rotation = frame.rotation, rotation.difference(from:smokeRotation) < 0.001,
+              let stats = frame.perception, stats.classifierError.isEmpty else {
+            failure = "Real model scene/attitude/tracker validation failed"; finished = true; return
         }
-        if frame.feed == "feet" {
-            guard let filter = frame.wearerFilter, filter.valid else {
-                failure = "Footwear filter did not run on the actual feet path"; finished = true; return
+        if let classified = stats.classified { classifications[frame.feed,default:[]].insert(classified) }
+        if let identity = identities[frame.feed], frame.feed == "front" {
+            guard frame.objects.contains(where: { $0.trackID == identity }) else {
+                failure = "Sample lost selected identity on \(frame.feed), gap \(frame.captured-(frames[frame.feed] ?? frame.captured)) s, IDs \(frame.objects.compactMap(\.trackID))"; finished = true; return
             }
-            print("PASS footwear filter protocol: \(filter.status)")
+        } else if let first = frame.objects.max(by: { $0.confidence < $1.confidence }), let identity = first.trackID {
+            identities[frame.feed] = identity
         }
-        // Measure the oldest scene just BEFORE replacement as well as after it;
-        // reporting only post-reply ages hides the end-of-cycle worst case.
+        if !frame.objects.isEmpty { trackedFrames += 1 }
+        if frame.feed == "feet", !(frame.wearerFilter?.valid ?? false) {
+            failure = "Footwear filtering metadata missing"; finished = true; return
+        }
         if frames.count == 2 { maxPairAge = max(maxPairAge,now-(frames.values.min() ?? now)) }
         frames[frame.feed] = frame.captured
         if frames.count == 2 { maxPairAge = max(maxPairAge,now-(frames.values.min() ?? now)) }
         times.append(frame.inferenceMS)
-        print(String(format:"PASS Swift → cached models → Swift: %@ · %.0f ms · %d cats",frame.feed,frame.inferenceMS,frame.objects.count))
+        print(String(format:"PASS live %@ · %.0f ms · %@ · %d tracked items",frame.feed,frame.inferenceMS,stats.mode,frame.objects.count))
         count += 1
-        if count == 8 { finished = !mapping || mapUpdates > 0 } else { submit() }
+        if now-began >= (moving ? 20 : 6), count >= (moving ? 64 : 24) {
+            finished = true
+            if identities.count != 2 || trackedFrames < 12 || classifications.values.filter({ $0.count>=2 }).count != 2 {
+                failure = "Background classification and persistent tracking did not complete on both feeds"
+            } else if mapping && mapUpdates == 0 { failure = "Optional mapping did not return a snapshot" }
+        } else { submit() }
     }
-    worker.onMap = { snapshot in
-        mapUpdates += 1; print("PASS optional mapping response: \(snapshot.status)")
-        if count == 8 { finished = true }
-    }
+    worker.onMap = { snapshot in mapUpdates += 1; print("PASS optional mapping response: \(snapshot.status)") }
     worker.onMapError = { message in failure = message; finished = true }
     try worker.start(root:root,mapping:mapping,mapDirectory:root.appendingPathComponent("build/mapping-smoke-"+UUID().uuidString))
     defer { worker.stop() }
@@ -58,24 +79,30 @@ func visionCheck() throws {
     while !finished && Date() < deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.02)) }
     if let failure { throw NSError(domain:failure,code:1) }
     guard finished else { throw NSError(domain:"Vision smoke timeout",code:1) }
-    print(String(format:"Mean inference %.0f ms; maximum pair age at replies %.3f seconds",times.reduce(0,+)/Double(times.count),maxPairAge))
+    print(String(format:"Mean live-path inference %.0f ms; maximum pair age at replies %.3f seconds",times.reduce(0,+)/Double(times.count),maxPairAge))
     guard maxPairAge < 1.5 else { throw NSError(domain:"Two-feed reply cadence exceeds the 1.5-second scene deadline",code:1) }
 }
 
 func audioCheck() throws {
-    func render(bearing: Double, yaw: Double, rotation: Rotation3D? = nil, elevation: Double = 0, two: Bool = false, muted: Bool = false, hazard: Bool = true, long: Bool = false) throws -> ([Float],[Float]) {
+    func render(bearing: Double, yaw: Double, rotation: Rotation3D? = nil, elevation: Double = 0, distance: Double = 0.15, itemDistance: Double? = nil, two: Bool = false, muted: Bool = false, hazard: Bool = true, long: Bool = false, flicker: Bool = false) throws -> ([Float],[Float]) {
         let audio = SpatialAudio()
         try audio.start(offline:true)
         defer { audio.stop() }
-        let observation = Observation(label:"test",confidence:1,bearing:bearing,elevation:elevation,distance:1)
+        let observation = Observation(label:"test",confidence:1,bearing:bearing,elevation:elevation,distance:distance)
         // Hazard has no FOV amplitude gate, making the rotated/static comparison exact.
-        let cue = Cue(observation,yaw:0,hazard:true), item = Cue(observation,yaw:0)
+        let cue = Cue(observation,yaw:0,hazard:true)
+        var itemObservation = observation; itemObservation.distance = itemDistance ?? distance
+        let item = Cue(itemObservation,yaw:0)
         let state = Guidance(target:two || !hazard ? item : nil,obstacle:hazard || two ? cue : nil,status:"SYNTHETIC AUDIO CHECK",fault:false)
         audio.update(state,pose:HeadPose(rotation:rotation ?? .heading(yaw),yaw:yaw))
         let buffer = AVAudioPCMBuffer(pcmFormat:audio.stereo,frameCapacity:4096)!
         var left: [Float] = [], right: [Float] = []
         for index in 0..<(long ? 40 : 14) {
             if muted && index == 4 { audio.mute() }
+            if flicker {
+                if index % 2 == 1 { audio.mute() }
+                else { audio.update(state,pose:HeadPose(rotation:rotation ?? .heading(yaw),yaw:yaw)) }
+            }
             let status = try audio.engine.renderOffline(4096,to:buffer)
             guard status == .success else { throw NSError(domain:"Offline render failed: \(status.rawValue)",code:1) }
             if index >= (long ? 8 : 10) {
@@ -144,8 +171,19 @@ func audioCheck() throws {
         for level in levels { let next = level > threshold; if next && !active { count += 1 }; active = next }
         return count
     }
-    let itemBursts = countBursts(itemMono), hazardBursts = countBursts(hazardMono)
-    try require(hazardBursts >= itemBursts*2,"Hazard double beeps remain temporally distinct (\(hazardBursts) vs \(itemBursts) item pulses)")
+    let hazardBursts = countBursts(hazardMono)
+    let expectedHazardBursts = Double(hazardMono.count)/48000*ObstacleSound.rate(0.15)*2
+    try require(abs(Double(hazardBursts)-expectedHazardBursts)<=2,"Emergency cue retains two distinct short taps per cycle (\(hazardBursts) bursts)")
+    let flicker = try render(bearing:0,yaw:0,distance:0.35,long:true,flicker:true)
+    try require(countBursts(mono(flicker)) <= 2 && energy(mono(flicker))>1e-12,"Flickering obstacle detections cannot repeatedly retrigger soft warnings")
+    let far = try render(bearing:0,yaw:0,distance:1,long:true)
+    let quiet = try render(bearing:0,yaw:0,distance:0.35,long:true)
+    let guidance = try render(bearing:0,yaw:0,distance:2,hazard:false,long:true)
+    let mixQuiet = try render(bearing:0,yaw:0,distance:0.35,itemDistance:2,two:true,long:true)
+    try require(energy(far.0)+energy(far.1)<1e-12,"Obstacle audio is silent beyond 0.50 m")
+    try require(energy(mono(quiet)) < energy(mono(guidance))*0.04,"Soft obstacle warning stays at least 14 dB below a 2 m item cue")
+    try require(energy(hazardMono) > 100*energy(mono(quiet)),"Emergency warning is over 20 dB above the sparse soft warning")
+    try require(toneEnergy(mono(mixQuiet),frequency:440)>10*toneEnergy(mono(mixQuiet),frequency:1200),"A soft warning leaves the item cue dominant in the actual mix")
     func writeExample(_ samples: ([Float],[Float]), name: String) throws {
         let url = URL(fileURLWithPath:FileManager.default.currentDirectoryPath).appendingPathComponent("build/"+name+".wav")
         let file = try AVAudioFile(forWriting:url,settings:[AVFormatIDKey:kAudioFormatLinearPCM,AVSampleRateKey:48000,

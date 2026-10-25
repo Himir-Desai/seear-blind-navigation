@@ -64,7 +64,11 @@ def scene_geometry(depth, detections, hfov=70, pitch=0, height=1.6, scale=1, exc
         # Median of projected positions is robust to a few depth outliers.
         coords = [float(np.median(a[y0:y1, x0:x1][roi])) for a in (x, forward, vertical)]
         if math.hypot(*coords[:2]) > .05:
-            objects.append(observation(detection["label"], detection["confidence"], *coords, height, box))
+            obj = observation(detection["label"], detection["confidence"], *coords, height, box)
+            for key in ("trackID","classificationCaptured","trackingQuality"):
+                if key in detection:
+                    obj[key] = detection[key]
+            objects.append(obj)
 
     # Class-independent occupancy: a miss by the object detector must not hide a chair/wall.
     # Exclude estimated floor and points above head height. RGB errors can still create

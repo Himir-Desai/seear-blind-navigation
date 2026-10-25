@@ -28,17 +28,19 @@ final class GuidanceTests: XCTestCase {
     }
     func testCameraForwardUsesCaptureYawAndNewHeadYawDoesNotMoveSource() {
         let e = ready(); e.search("backpack")
-        let o = Observation(label:"obstacle",confidence:1,bearing:0,distance:2)
-        e.ingest(frame("front",yaw:30,objects:[bag],obstacles:[o]))
-        let result = e.evaluate(now:10,yaw:30,tracking:true)
+        let o = Observation(label:"obstacle",confidence:1,bearing:0,distance:0.4)
+        e.ingest(frame("front",time:10.1,yaw:30,objects:[bag],obstacles:[o]))
+        e.ingest(frame("front",time:10.2,yaw:30,objects:[bag],obstacles:[o]))
+        let result = e.evaluate(now:10.2,yaw:30,tracking:true)
         XCTAssertEqual(result.obstacle!.bearing,30,accuracy:1e-8)
         XCTAssertEqual(result.target!.bearing,45,accuracy:1e-8)
-        XCTAssertEqual(result.target!.level,0.2)
-        XCTAssertEqual(e.evaluate(now:10,yaw:40,tracking:true).target!.bearing,45)
+        XCTAssertEqual(result.target!.level,1)
+        XCTAssertEqual(e.evaluate(now:10.2,yaw:40,tracking:true).target!.bearing,45)
     }
+
     func testImminentObstaclePreemptsItemButSearchStaysActive() {
         let e = ready(); e.search("backpack")
-        e.ingest(frame("feet",objects:[bag],obstacles:[Observation(label:"obstacle",confidence:1,bearing:0,distance:0.8)]))
+        e.ingest(frame("feet",objects:[bag],obstacles:[Observation(label:"obstacle",confidence:1,bearing:0,distance:0.15)]))
         let result = e.evaluate(now:10,yaw:0,tracking:true)
         XCTAssertNotNil(result.obstacle); XCTAssertEqual(result.obstacle?.feed,"feet")
         XCTAssertNil(result.target); XCTAssertEqual(e.target,"backpack")
@@ -160,7 +162,7 @@ final class GuidanceTests: XCTestCase {
         for yaw in [-179.0, -90, 0, 90, 179, 180, 270, 360] {
             let e = GuidanceEngine()
             for feed in ["front","feet"] {
-                e.ingest(frame(feed,yaw:yaw,obstacles:[Observation(label:"wall",confidence:1,bearing:0,distance:2)]))
+                e.ingest(frame(feed,yaw:yaw,obstacles:[Observation(label:"wall",confidence:1,bearing:0,distance:0.15)]))
             }
             let state = e.evaluate(now:10,yaw:yaw,tracking:true)
             XCTAssertFalse(state.fault,"Turn \(yaw) must not need a forward reset")
@@ -169,9 +171,9 @@ final class GuidanceTests: XCTestCase {
     }
     func testOldForwardHazardIsNotMistakenForNewForwardAfterTurn() {
         let e = ready()
-        e.ingest(frame("front",obstacles:[Observation(label:"wall",confidence:1,bearing:0,distance:2)]))
+        e.ingest(frame("front",obstacles:[Observation(label:"wall",confidence:1,bearing:0,distance:0.15)]))
         XCTAssertNil(e.evaluate(now:10,yaw:90,tracking:true).obstacle)
-        e.ingest(frame("feet",yaw:90,obstacles:[Observation(label:"chair",confidence:1,bearing:0,distance:2)]))
+        e.ingest(frame("feet",yaw:90,obstacles:[Observation(label:"chair",confidence:1,bearing:0,distance:0.15)]))
         XCTAssertEqual(e.evaluate(now:10,yaw:90,tracking:true).obstacle?.bearing,90)
     }
     func testTargetStaysAtCaptureDirectionDuringTurnThenRefreshes() {

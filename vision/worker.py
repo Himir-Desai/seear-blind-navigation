@@ -27,6 +27,10 @@ def run(backend, mapping=False):
     from PIL import Image
     from geometry import scene_geometry
     service = None
+    live = None
+    if callable(getattr(backend,"estimate_depth",None)) and callable(getattr(backend,"detect",None)):
+        from live_perception import LivePerception
+        live = LivePerception(backend)
     if mapping:
         try:
             from mapping_service import MappingService
@@ -52,17 +56,21 @@ def run(backend, mapping=False):
             image = Image.open(io.BytesIO(base64.b64decode(request["jpeg"], validate=True))).convert("RGB")
             if image.width > 1280 or image.height > 1280:
                 raise ValueError("Frame dimensions exceed protocol limit")
-            excluded,filter_info = None,None
-            if request["feed"] == "feet" and callable(getattr(backend,"infer_wearer",None)):
-                from wearer import wearer_mask
-                depth,detections,body = backend.infer_wearer(image,target)
-                excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"],request.get("tilt"))
+            stats = None
+            if live is not None:
+                depth,objects,obstacles,coverage,filter_info,stats = live.process(image,request)
             else:
-                depth,detections = backend.infer(image,target)
-            objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,tilt=request.get("tilt"),**request["geometry"])
-            scene = dict(feed=request["feed"], captured=request["captured"], yaw=request["yaw"], target=target,
+                excluded,filter_info = None,None
+                if request["feed"] == "feet" and callable(getattr(backend,"infer_wearer",None)):
+                    from wearer import wearer_mask
+                    depth,detections,body = backend.infer_wearer(image,target)
+                    excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"],request.get("tilt"))
+                else:
+                    depth,detections = backend.infer(image,target)
+                objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,tilt=request.get("tilt"),**request["geometry"])
+            scene = dict(feed=request["feed"], captured=request["captured"], yaw=request["yaw"], target=target,searchID=request.get("searchID"),
                          objects=objects, obstacles=obstacles, coverage=coverage,
-                         inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info,rotation=request.get("rotation"))
+                         inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info,rotation=request.get("rotation"),perception=stats)
             emit(dict(type="scene", scene=scene, id=request["id"]))
             if service is not None:
                 try:
@@ -73,6 +81,8 @@ def run(backend, mapping=False):
         except Exception as exc:
             # An invalid frame is an error, never an empty 'clear' scene.
             emit(dict(type="error", message=str(exc)))
+    if live is not None:
+        live.close()
     if service is not None:
         service.close()
 

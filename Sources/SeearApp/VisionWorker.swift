@@ -72,7 +72,7 @@ final class VisionWorker {
             } catch { DispatchQueue.main.async { self.busy = false; self.onStatus?("Invalid vision response: \(error.localizedDescription)", false) } }
         }
     }
-    func submit(_ frame: CapturedImage, feed: String, target: String, geometry: CameraGeometry) {
+    func submit(_ frame: CapturedImage, feed: String, target: String, geometry: CameraGeometry, searchID: String = "", selectedTrackID: String? = nil) {
         guard ready, !busy else { return }
         busy = true
         let id = generation
@@ -82,7 +82,7 @@ final class VisionWorker {
                 let bitmap = NSBitmapImageRep(cgImage: frame.image)
                 guard let jpeg = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.75]) else { throw NSError(domain: "JPEG encoding failed", code: 1) }
                 let request: [String: Any] = ["id": id, "feed": feed, "captured": frame.timestamp, "yaw": frame.yaw,
-                    "target": target, "geometry": geometry.dictionary, "tilt": frame.tilt.matrix,
+                    "target": target, "searchID": searchID, "selectedTrackID": selectedTrackID as Any? ?? NSNull(), "geometry": geometry.dictionary, "tilt": frame.tilt.matrix,
                     "rotation": ["x":frame.rotation.x,"y":frame.rotation.y,"z":frame.rotation.z,"w":frame.rotation.w],
                     "jpeg": jpeg.base64EncodedString()]
                 var data = try JSONSerialization.data(withJSONObject: request); data.append(10)
