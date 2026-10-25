@@ -105,7 +105,7 @@ class LivePerception:
         tracking_ms = (time.monotonic()-start)*1000
         geometry,tilt = request["geometry"],request.get("tilt")
         excluded,filter_info = wearer_mask(image,depth,body,feed,geometry,tilt)
-        objects,obstacles,coverage = scene_geometry(depth,detections,excluded=excluded,tilt=tilt,**geometry)
+        objects,obstacles,coverage = scene_geometry(depth,detections,excluded=excluded,tilt=tilt,feed=feed,**geometry)
         classified = self.last_classified.get(feed)
         mode = "tracking" if objects else "searching" if request["target"] else "monitoring"
         stats = dict(depthMS=depth_ms,trackingMS=tracking_ms,detectorMS=self.detector_ms.get(feed,0),mode=mode,

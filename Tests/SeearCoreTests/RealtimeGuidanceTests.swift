@@ -35,7 +35,9 @@ final class RealtimeGuidanceTests: XCTestCase {
         XCTAssertNotNil(e.evaluate(now:10,yaw:0,tracking:true).target)
         var moved = item(bearing:60); moved.distance = 0.8; moved.box = [0.7,0.1,0.9,0.3]
         e.ingest(scene(time:10.2,objects:[moved,item("other",score:0.8)]))
-        XCTAssertEqual(e.evaluate(now:10.2,yaw:0,tracking:true).target?.bearing,60)
+        XCTAssertEqual(e.evaluate(now:10.2,yaw:0,tracking:true).target?.bearing,0) // First large move is pending visual confirmation.
+        e.ingest(scene(time:10.3,objects:[moved]))
+        XCTAssertEqual(e.evaluate(now:10.3,yaw:0,tracking:true).target!.bearing,60,accuracy:1e-8)
         XCTAssertEqual(e.selectedTrackID,"chosen")
     }
     func testNearbyDifferentTrackCannotStealTheLockWithinScoreMargin() {

@@ -280,8 +280,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         if !visionOK { state = Guidance(target:nil,obstacle:nil,status:"Loading or waiting for local vision. Guidance paused.",fault:true) }
         updateItemPreview()
         audio?.update(state,pose:tracker.pose); status.stringValue = state.status
-        if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? "Feet camera" : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
-        else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw)) }
+        if let obstacle = state.obstacle { detail.stringValue = String(format:"%@ · obstacle ~%.1f m horizontally · %.0f° relative to head",obstacle.feed == "feet" ? (obstacle.lowObstacle ? "Feet camera · low obstacle" : "Feet camera") : "Front camera",obstacle.distance,Geometry.relative(obstacle.bearing,yaw:tracker.yaw)) }
+        else if let item = state.target { detail.stringValue = String(format:"%@ ~%.1f m · %.0f° relative to head · anchored elevation %+.0f° · estimated",guidance.target,item.distance,Geometry.relative(item.bearing,yaw:tracker.yaw),item.elevation) }
         else if !guidance.target.isEmpty && !state.fault {
             detail.stringValue = String(format:"No current item match above %.2f",guidance.itemConfidencePolicy.minimum)
         } else { detail.stringValue = "No current directional cue" }

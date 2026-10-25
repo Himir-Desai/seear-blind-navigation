@@ -67,7 +67,7 @@ def run(backend, mapping=False):
                     excluded,filter_info = wearer_mask(image,depth,body,"feet",request["geometry"],request.get("tilt"))
                 else:
                     depth,detections = backend.infer(image,target)
-                objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,tilt=request.get("tilt"),**request["geometry"])
+                objects, obstacles, coverage = scene_geometry(depth, detections, excluded=excluded,tilt=request.get("tilt"),feed=request["feed"],**request["geometry"])
             scene = dict(feed=request["feed"], captured=request["captured"], yaw=request["yaw"], target=target,searchID=request.get("searchID"),
                          objects=objects, obstacles=obstacles, coverage=coverage,
                          inferenceMS=(time.monotonic() - start) * 1000,wearerFilter=filter_info,rotation=request.get("rotation"),perception=stats)

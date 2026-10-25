@@ -107,9 +107,10 @@ public struct Cue: Equatable {
     public var level: Double
     public var hazard: Bool
     public var feed: String?
+    public var lowObstacle: Bool
     public init(_ o: Observation, yaw: Double, level: Double = 1, hazard: Bool = false, feed: String? = nil) {
         bearing = Geometry.wrap(o.bearing + yaw); elevation = o.elevation; distance = o.distance
-        self.level = level; self.hazard = hazard; self.feed = feed
+        self.level = level; self.hazard = hazard; self.feed = feed; lowObstacle = hazard && o.label == "low_obstacle"
     }
 }
 
@@ -147,14 +148,15 @@ public final class GuidanceEngine {
         var captured: Double
     }
     private var lockedTarget: ItemLock?
+    public private(set) var itemDirectionAnchor: ItemDirectionAnchor?
     private var acquiredItem = false
     public var selectedTrackID: String? { lockedTarget?.trackID }
     public var needsItemReselection: Bool { acquiredItem && lockedTarget == nil && !target.isEmpty }
     public init() {}
-    public func reset() { frames.removeAll(); confirmedObstacles.removeAll(); lockedTarget = nil; selectedItem = nil; searchID = UUID().uuidString }
+    public func reset() { frames.removeAll(); confirmedObstacles.removeAll(); lockedTarget = nil; itemDirectionAnchor = nil; selectedItem = nil; searchID = UUID().uuidString }
     public func pause() { isPaused = true; frames.removeAll(); confirmedObstacles.removeAll(); selectedItem = nil }
     public func resume() { isPaused = false; frames.removeAll(); confirmedObstacles.removeAll(); selectedItem = nil }
-    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); searchID = UUID().uuidString; lockedTarget = nil; acquiredItem = false; selectedItem = nil }
+    public func search(_ text: String) { target = VoiceCommand.canonicalTarget(text); searchID = UUID().uuidString; lockedTarget = nil; itemDirectionAnchor = nil; acquiredItem = false; selectedItem = nil }
     public func ingest(_ frame: SceneFrame) {
         guard ["front", "feet"].contains(frame.feed), frame.captured.isFinite, frame.yaw.isFinite,
               frame.coverage.isFinite, (0...1).contains(frame.coverage), frame.rotation?.valid ?? true,
@@ -254,13 +256,27 @@ public final class GuidanceEngine {
         // A weak current association can update the comparison score without
         // emitting an item cue or box below the floor.
         if let (frame,observation) = selected ?? associatedCurrent {
+            let continuing = associatedCurrent.map { current in
+                current.0.feed == frame.feed && current.0.captured == frame.captured && current.1 == observation
+            } ?? false
+            let bearing = Geometry.wrap(observation.bearing+frame.yaw)
+            if !continuing || itemDirectionAnchor == nil {
+                itemDirectionAnchor = ItemDirectionAnchor(bearing:bearing,elevation:observation.elevation,captured:frame.captured)
+            } else {
+                itemDirectionAnchor?.observe(bearing:bearing,elevation:observation.elevation,captured:frame.captured)
+            }
             lockedTarget = ItemLock(feed:frame.feed,trackID:observation.trackID,bearing:Geometry.wrap(observation.bearing+frame.yaw),distance:observation.distance,
                                     confidence:observation.confidence,box:observation.box,rotation:frame.rotation ?? .heading(frame.yaw),captured:frame.captured)
             acquiredItem = true
         }
         if let (frame,observation) = selected { selectedItem = (frame.feed,observation) }
         let urgent = hazard.map { $0.1.distance <= ObstacleSound.emergencyRange } ?? false
-        return Guidance(target: urgent ? nil : selected.map { Cue($0.1, yaw: $0.0.yaw, level: 1) },
+        let itemCue = selected.map { frame,observation -> Cue in
+            var cue = Cue(observation,yaw:frame.yaw)
+            if let anchor = itemDirectionAnchor { cue.bearing = anchor.bearing; cue.elevation = anchor.elevation }
+            return cue
+        }
+        return Guidance(target: urgent ? nil : itemCue,
                         obstacle: hazard.map { Cue($0.1, yaw: $0.0.yaw, hazard: true, feed: $0.0.feed) },
                         status: urgent ? "Emergency obstacle nearby" : hazard != nil ? "Quiet nearby obstacle warning" : target.isEmpty ? "Monitoring forward view" : needsItemReselection ? "Find again to reselect \(target)" : selected == nil ? "Searching for \(target)" : "Guiding to \(target)", fault: false)
     }

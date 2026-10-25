@@ -35,7 +35,7 @@ final class GuidanceTests: XCTestCase {
         XCTAssertEqual(result.obstacle!.bearing,30,accuracy:1e-8)
         XCTAssertEqual(result.target!.bearing,45,accuracy:1e-8)
         XCTAssertEqual(result.target!.level,1)
-        XCTAssertEqual(e.evaluate(now:10.2,yaw:40,tracking:true).target!.bearing,45)
+        XCTAssertEqual(e.evaluate(now:10.2,yaw:40,tracking:true).target!.bearing,45,accuracy:1e-8)
     }
 
     func testImminentObstaclePreemptsItemButSearchStaysActive() {
@@ -87,7 +87,7 @@ final class GuidanceTests: XCTestCase {
         var competitor = other; competitor.confidence = 0.8
         e.ingest(frame("front",time:10.2,objects:[competitor,moved]))
         e.ingest(frame("feet",time:10.2,objects:[competitor]))
-        XCTAssertEqual(e.evaluate(now:10.2,yaw:0,tracking:true).target?.bearing,2)
+        XCTAssertEqual(e.evaluate(now:10.2,yaw:0,tracking:true).target?.bearing,0) // Small angle noise keeps the source anchored.
         XCTAssertEqual(e.selectedItem?.observation,moved)
         e.ingest(frame("front",time:10.3,objects:[competitor]))
         XCTAssertNil(e.evaluate(now:10.3,yaw:0,tracking:true).target)
@@ -105,7 +105,7 @@ final class GuidanceTests: XCTestCase {
         e.ingest(frame("front",time:12,objects:[other])); e.ingest(frame("feet",time:12))
         XCTAssertNil(e.evaluate(now:12,yaw:0,tracking:true).target)
         e.ingest(frame("front",time:12.1,objects:[bag,other]))
-        XCTAssertEqual(e.evaluate(now:12.1,yaw:0,tracking:true).target?.bearing,bag.bearing)
+        XCTAssertEqual(e.evaluate(now:12.1,yaw:0,tracking:true).target!.bearing,bag.bearing,accuracy:1e-8)
     }
     func testPauseResumeKeepsTheChosenItemAndResetRequiresFindAgain() {
         let e = ready(); e.search("backpack"); e.ingest(frame("front",objects:[bag]))
@@ -113,13 +113,13 @@ final class GuidanceTests: XCTestCase {
         e.pause(); XCTAssertNil(e.selectedItem); e.resume()
         let other = Observation(label:"backpack",confidence:0.85,bearing:-30,distance:2)
         e.ingest(frame("front",time:11,objects:[other,bag])); e.ingest(frame("feet",time:11))
-        XCTAssertEqual(e.evaluate(now:11,yaw:0,tracking:true).target?.bearing,bag.bearing)
+        XCTAssertEqual(e.evaluate(now:11,yaw:0,tracking:true).target!.bearing,bag.bearing,accuracy:1e-8)
         e.reset() // New motion reference cannot reuse old absolute bearings.
         e.ingest(frame("front",time:12,objects:[other,bag])); e.ingest(frame("feet",time:12))
         XCTAssertNil(e.evaluate(now:12,yaw:0,tracking:true).target)
         XCTAssertTrue(e.needsItemReselection)
         e.search("backpack")
-        XCTAssertEqual(e.evaluate(now:12,yaw:0,tracking:true).target?.bearing,other.bearing)
+        XCTAssertEqual(e.evaluate(now:12,yaw:0,tracking:true).target!.bearing,other.bearing,accuracy:1e-8)
         e.search(""); XCTAssertNil(e.selectedItem); XCTAssertFalse(e.needsItemReselection)
     }
     func testPoorDepthCoveragePausesGuidance() {
